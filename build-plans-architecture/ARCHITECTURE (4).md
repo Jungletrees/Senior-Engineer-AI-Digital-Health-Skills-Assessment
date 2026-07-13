@@ -988,6 +988,7 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 | Reranker implementation | Local `sentence-transformers` CrossEncoder | Hosted reranker API | No new external dependency or per-query cost at this scale; hosted reranker named as the production alternative if precision needs grow |
 | Citation mechanism | Hand-rolled `<context>` block (kept as default) | `search_result` content blocks | Sound injection defense already in place; `search_result` blocks are a candidate upgrade pending an API/version spike (§16), not yet proven in this project |
 | Retrieval Agent gating | Cascade on low hybrid-search confidence (default 0.55) | Always-agentic retrieval | Keeps the cheap deterministic path as the default; matches §10's cost-optimization philosophy; threshold is a starting default pending golden-set calibration (§7.6) |
+| Backend database access implementation | Continue SQLAlchemy async sessions with explicit `text()` SQL for pgvector/full-text retrieval | Rework the implemented backend to raw `asyncpg` before BC7 | The repository has already standardized on SQLAlchemy models, sessions, and Alembic integration through BC6. BC7 still uses inspectable hand-written SQL for `SET LOCAL hnsw.ef_search`, pgvector distance, and full-text search, preserving the architecture's operational requirements without introducing a second DB access paradigm mid-build. |
 
 *(Add rows as further implementation decisions are made — this table is the canonical record of "why," which is explicitly part of what the assessment grades.)*
 

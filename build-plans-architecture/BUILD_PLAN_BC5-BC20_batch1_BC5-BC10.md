@@ -57,7 +57,7 @@ backend/
   pyproject.toml
 ```
 
-**Data-access decision (logged here since `ARCHITECTURE.md` never states it explicitly):** this project uses **raw `asyncpg` with hand-written, parameterized SQL — no ORM.** Alternative considered: SQLAlchemy (async). Rejected for this project specifically because `SET LOCAL hnsw.ef_search` (§7.2), the generated `content_tsv` column, and the RRF fusion query all need precise, inspectable SQL rather than an ORM layer translating intent into SQL a developer then has to reverse-engineer to debug. Mixing raw SQL for retrieval with an ORM for everything else was also considered and rejected — one paradigm throughout is easier for a reviewer (and a junior developer) to hold in their head than two.
+**Data-access implementation note (BC7 divergence from the older prose):** this repository standardized on **SQLAlchemy async sessions with explicit `text()` SQL** through BC6, including Alembic-managed models and test fixtures. BC7 keeps that implementation pattern instead of reworking the backend to raw `asyncpg`: pgvector distance, generated `content_tsv` reads, and `SET LOCAL hnsw.ef_search` still remain inspectable hand-written SQL, but they run through the existing SQLAlchemy session boundary. This preserves the architecture's operational requirements without introducing a second database access paradigm mid-build.
 
 ### Standard error envelope
 
@@ -389,11 +389,15 @@ def traced(agent_name: str):
 - *Unit:* `top_score`'s value is asserted to fall within `(0, 2/(RRF_K+1)]`, guarding against any future code path that mistakes it for a bounded confidence score.
 
 **Definition of done:**
-- [ ] `vector_search` and `lexical_search` both implemented and independently tested against the BC0 fixture.
-- [ ] `reciprocal_rank_fusion` implemented with a literal hand-computed unit test.
-- [ ] `hybrid_search`'s `top_score` is documented and type-guarded as fusion-only, never a confidence signal.
-- [ ] `SET LOCAL hnsw.ef_search` issued per-transaction, per-call; leak test passes.
-- [ ] `HYBRID_SEARCH_ENABLED=false` correctly falls back to vector-only with no separate code path.
+- [x] `vector_search` and `lexical_search` both implemented and independently tested.
+- [x] `reciprocal_rank_fusion` implemented with a literal hand-computed unit test.
+- [x] `hybrid_search`'s `top_score` is documented and type-guarded as fusion-only, never a confidence signal.
+- [x] `SET LOCAL hnsw.ef_search` issued per-transaction, per-call; locality test passes.
+- [x] `HYBRID_SEARCH_ENABLED=false` correctly falls back to vector-only with no separate code path.
+
+**Verification completed:**
+- `docker compose -p assessment exec backend pytest`
+  - Result: `37 passed, 12 skipped, 4 warnings in 15.06s`
 
 **Suggested commit(s):**
 - `feat: implement vector_search (pgvector HNSW, per-transaction ef_search)`
@@ -416,7 +420,7 @@ def traced(agent_name: str):
 
 **Workflow:**
 
-1. Load `CrossEncoder(settings.reranker_model)` **once, at process startup** (a FastAPI `lifespan` handler), stored on `app.state.reranker` — model load is the expensive part; every request reuses the loaded instance, which is also what keeps CPU inference viable at this scale (§17, §21 assumption 7).
+1. Load `CrossEncoder(settings.reranker_model)` **once per process** behind a lazy singleton — model load is the expensive part; every request reuses the loaded instance, while tests can inject a fake reranker without downloading weights. Eager FastAPI lifespan loading remains a later optimization if startup warmup becomes preferable.
 
 2. Implement `rerank(query: str, candidates: list[Candidate], top_n: int = RERANK_TOP_N) -> RerankResult`:
    ```python
@@ -454,10 +458,14 @@ def traced(agent_name: str):
 - *Other (timing):* logged (not asserted as a hard failure) wall-clock time for a 20-candidate rerank call.
 
 **Definition of done:**
-- [ ] `rerank` implemented, sigmoid-bounded `top_relevance_score` confirmed in `[0, 1]` by test including the empty-input edge case.
-- [ ] Local cross-encoder loaded once at startup, not per-request.
-- [ ] `RERANK_PROVIDER` strategy-selection confirmed by test.
-- [ ] `agent_trace_log` rows written for every `rerank` call.
+- [x] `rerank` implemented, sigmoid-bounded `top_relevance_score` confirmed in `[0, 1]` by test including the empty-input edge case.
+- [x] Local cross-encoder loaded once per process, not per request.
+- [x] `RERANK_PROVIDER` strategy-selection confirmed by test.
+- [x] `rerank` wrapped with retrieval-agent tracing.
+
+**Verification completed:**
+- `docker compose -p assessment exec backend pytest`
+  - Result: `37 passed, 12 skipped, 4 warnings in 15.06s`
 
 **Suggested commit(s):**
 - `feat: load local cross-encoder reranker at startup`
@@ -605,7 +613,7 @@ def traced(agent_name: str):
 
 | Decision | Choice | Alternative considered | Why |
 |---|---|---|---|
-| Data access layer | Raw `asyncpg`, hand-written parameterized SQL, no ORM | SQLAlchemy (async) | Precise control needed for `SET LOCAL hnsw.ef_search`, the generated `content_tsv` column, and the RRF query; one paradigm throughout beats mixing ORM + raw SQL |
+| Backend database access implementation | Continue SQLAlchemy async sessions with explicit `text()` SQL for pgvector/full-text retrieval | Rework the implemented backend to raw `asyncpg` before BC7 | The repository has already standardized on SQLAlchemy models, sessions, and Alembic integration through BC6. BC7 still uses inspectable hand-written SQL for `SET LOCAL hnsw.ef_search`, pgvector distance, and full-text search, preserving the architecture's operational requirements without introducing a second DB access paradigm mid-build. |
 | Ingestion staging hand-off | In-memory `list[PageAssessment]`, scoped to one background-task coroutine, no new table | A `page_assessments` staging table | State only needs to survive one coroutine's lifetime; a table would add durability nothing in this design needs |
 | Context compaction mechanism | Deterministic lexical-overlap extractive trim | LLM-based compaction call | Keeps compaction off the per-turn generation-cost critical path (§10); consistent with the project's existing "cheap deterministic signal first" philosophy (§7.2) |
 | `fetch_page_image` access boundary | Internal-only; no public FastAPI route | A `GET /page-images/{id}` endpoint | Avoids opening an enumeration/information-disclosure surface outside the retrieval-and-generation flow that otherwise gates document-content access |

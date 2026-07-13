@@ -33,6 +33,7 @@ rich==15.0.0
 rich-toolkit==0.19.7
 rignore==0.7.6
 sentry-sdk==2.59.0
+sentence-transformers==5.6.0
 shellingham==1.5.4
 SQLAlchemy==2.0.45
 alembic==1.17.2
