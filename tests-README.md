@@ -51,6 +51,16 @@ Docker containers are pre-packaged with all required libraries (`poppler-utils`,
     docker compose -p assessment exec backend pytest app/tests/test_ingestion_agent.py -vv -s
     ```
 
+*   **Run BC7 retrieval verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_retrieval.py -vv -s
+    ```
+
+*   **Run BC8 reranking verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_rerank.py -vv -s
+    ```
+
 ### 2.2 Running Tests Locally (Without Docker)
 If you are developing locally with a Python virtual environment:
 
@@ -74,15 +84,17 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC3/BC4 Document Tests:** `backend/app/tests/test_documents.py` verifies upload validation, deduplication, status/list/delete endpoints, the BC4 `detect_page_structure` contract, OCR fallback wiring, and the upload-to-rasterization worker path that persists `page_images` rows. `backend/app/tests/test_rasterization.py` validates the instrumented worker transition from `processing` to `indexed`, including page image persistence and chunking metadata. Poppler and Tesseract calls are mocked in deterministic tests; the Docker image includes the real binaries for manual or integration runs.
 - **BC5 Chunking/Embedding Tests:** `backend/app/tests/test_chunking.py` verifies chunk size limits, configured overlap behavior, heading/table-aware splitting, deterministic embedding generation, embedding dimension validation, pgvector persistence, and database-generated `content_tsv`. Hosted OpenAI/Voyage embedding calls are not made in deterministic tests; tests inject a fake embedding client, while local development without provider keys uses the deterministic fallback path.
 - **BC6 Ingestion Agent Tests:** `backend/app/tests/test_ingestion_agent.py` verifies the page-scaled ingestion iteration cap, the static tool scope, agent trace logging, table-page image parity with the deterministic path, per-page fallback metadata, and prompt-injection/tool-scope containment. Hosted Anthropic calls are not made in deterministic tests; tests inject a scripted model client.
+- **BC7 Retrieval Tests:** `backend/app/tests/test_retrieval.py` verifies literal Reciprocal Rank Fusion scoring, pgvector vector retrieval, generated-column full-text lexical retrieval, hybrid ordering, vector-only fallback, deleted-document exclusion, query embedding dimension mismatch, and transaction-local `hnsw.ef_search`.
+- **BC8 Rerank Tests:** `backend/app/tests/test_rerank.py` verifies empty-input behavior, sigmoid-bounded score ordering, `top_n` limiting, hosted-provider strategy selection, and explicit failure when a hosted provider is configured without an adapter. Deterministic tests inject fake rerankers and do not download local cross-encoder weights.
 
 ### 2.4 Current Cycle Verification Log
 
-Latest full backend verification for BC6:
+Latest full backend verification for BC7/BC8:
 
 ```text
 docker compose -p assessment exec backend pytest
 
-24 passed, 12 skipped, 4 warnings in 8.28s
+37 passed, 12 skipped, 4 warnings in 15.06s
 ```
 
 ---
