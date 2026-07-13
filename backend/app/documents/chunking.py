@@ -249,11 +249,20 @@ async def prepare_and_persist_document_chunks(
     db: AsyncSession,
     document: Document,
     embedding_client: EmbeddingClient | None = None,
+    page_assessments: list[Any] | None = None,
 ) -> ChunkingSummary:
     """Chunk a document, embed every chunk, and persist rows to ``chunks``."""
     pdf_path = resolve_document_pdf_path(document)
-    logger.info("chunking.pdf_parse.start document_id=%s path=%s", document.id, pdf_path)
-    blocks = extract_structured_blocks_from_pdf(pdf_path)
+    if page_assessments is not None:
+        logger.info(
+            "chunking.page_assessments.start document_id=%s pages=%s",
+            document.id,
+            len(page_assessments),
+        )
+        blocks = structured_blocks_from_page_assessments(page_assessments)
+    else:
+        logger.info("chunking.pdf_parse.start document_id=%s path=%s", document.id, pdf_path)
+        blocks = extract_structured_blocks_from_pdf(pdf_path)
     logger.info(
         "chunking.pdf_parse.complete document_id=%s blocks=%s",
         document.id,
@@ -325,6 +334,67 @@ async def prepare_and_persist_document_chunks(
         embedding_count=len(embeddings),
         embedding_model=get_embedding_model(),
     )
+
+
+def structured_blocks_from_page_assessments(page_assessments: list[Any]) -> list[StructuredBlock]:
+    """Convert BC6 page assessments into deterministic chunking blocks."""
+    blocks: list[StructuredBlock] = []
+    active_section: str | None = None
+    for assessment in page_assessments:
+        page_number = int(getattr(assessment, "page_number"))
+        heading_candidates = list(getattr(assessment, "heading_candidates", []) or [])
+        text_value = str(getattr(assessment, "text", "") or "")
+
+        for heading in heading_candidates:
+            normalized_heading = _normalize_text(str(heading))
+            if normalized_heading:
+                active_section = normalized_heading
+                blocks.append(
+                    StructuredBlock(
+                        content=normalized_heading,
+                        page_number=page_number,
+                        block_type="heading",
+                        section_path=active_section,
+                    )
+                )
+
+        for line in text_value.splitlines():
+            normalized_line = _normalize_text(line)
+            if not normalized_line:
+                continue
+            if normalized_line in heading_candidates or _looks_like_heading(normalized_line):
+                active_section = normalized_line
+                blocks.append(
+                    StructuredBlock(
+                        content=normalized_line,
+                        page_number=page_number,
+                        block_type="heading",
+                        section_path=active_section,
+                    )
+                )
+            else:
+                blocks.append(
+                    StructuredBlock(
+                        content=normalized_line,
+                        page_number=page_number,
+                        block_type="paragraph",
+                        section_path=active_section,
+                    )
+                )
+
+        if getattr(assessment, "has_table", False):
+            table_text = _normalize_text(text_value)
+            if table_text:
+                blocks.append(
+                    StructuredBlock(
+                        content=table_text,
+                        page_number=page_number,
+                        block_type="table",
+                        section_path=active_section,
+                    )
+                )
+
+    return blocks
 
 
 def validate_embedding_batch(

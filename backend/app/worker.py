@@ -14,12 +14,13 @@ from uuid import UUID
 
 from sqlalchemy import select
 
+from app.agents.ingestion_agent import IngestionAgent, IngestionModelClient, IngestionRunResult
 from app.database import async_session
 from app.documents.chunking import (
     EmbeddingClient,
     prepare_and_persist_document_chunks,
 )
-from app.documents.processing import process_document_structure, resolve_document_pdf_path
+from app.documents.processing import resolve_document_pdf_path
 from app.models import Document
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,7 @@ UPLOAD_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "../uploads
 async def process_document(
     document_id: UUID,
     embedding_client: EmbeddingClient | None = None,
+    ingestion_model_client: IngestionModelClient | None = None,
 ) -> None:
     """Process one uploaded PDF through structure detection, chunking, and indexing."""
     logger.info("process_document.start document_id=%s", document_id)
@@ -87,33 +89,38 @@ async def process_document(
                 file_size,
             )
 
-            logger.info("process_document.pdf_parse.structure.start document_id=%s", document.id)
-            structure_summary = await process_document_structure(db, document)
+            logger.info("process_document.ingestion_agent.start document_id=%s", document.id)
+            page_count = document.page_count or _read_pdf_page_count(pdf_path)
+            ingestion_result = await IngestionAgent(
+                db=db,
+                document=document,
+                model_client=ingestion_model_client,
+            ).run(page_count=page_count)
+            _apply_structure_metadata(document, ingestion_result)
             logger.info(
-                "process_document.pdf_parse.structure.complete "
+                "process_document.ingestion_agent.complete "
                 "document_id=%s processed_pages=%s rasterized_pages=%s table_pages=%s "
-                "figure_pages=%s low_yield_pages=%s errors=%s",
+                "figure_pages=%s low_yield_pages=%s fallback_reason=%s fallback_pages=%s",
                 document.id,
-                structure_summary.processed_pages,
-                structure_summary.rasterized_pages,
-                structure_summary.table_pages,
-                structure_summary.figure_pages,
-                structure_summary.low_yield_pages,
-                structure_summary.errors,
+                len(ingestion_result.assessments),
+                len([page for page in ingestion_result.assessments if page.has_table or page.has_figure]),
+                [page.page_number for page in ingestion_result.assessments if page.has_table],
+                [page.page_number for page in ingestion_result.assessments if page.has_figure],
+                [
+                    page.page_number
+                    for page in ingestion_result.assessments
+                    if page.extraction_confidence == "low_yield_needs_ocr"
+                ],
+                ingestion_result.fallback_reason,
+                ingestion_result.fallback_pages,
             )
-            if structure_summary.status == "failed":
-                logger.error(
-                    "process_document.structure.failed document_id=%s errors=%s",
-                    document.id,
-                    structure_summary.errors,
-                )
-                return
 
             logger.info("process_document.chunk_prepare.start document_id=%s", document.id)
             chunk_summary = await prepare_and_persist_document_chunks(
                 db,
                 document,
                 embedding_client=embedding_client,
+                page_assessments=ingestion_result.assessments,
             )
             logger.info(
                 "process_document.chunk_prepare.complete "
@@ -191,3 +198,39 @@ def _safe_file_size(path: Path) -> int | None:
         return path.stat().st_size
     except OSError:
         return None
+
+
+def _read_pdf_page_count(pdf_path: Path) -> int:
+    import pdfplumber
+
+    with pdfplumber.open(pdf_path) as pdf:
+        return len(pdf.pages)
+
+
+def _apply_structure_metadata(document: Document, result: IngestionRunResult) -> None:
+    assessments = result.assessments
+    metadata = dict(document.metadata_ or {})
+    structure_detection = {
+        "processed_pages": len(assessments),
+        "rasterized_pages": len([page for page in assessments if page.has_table or page.has_figure]),
+        "table_pages": [page.page_number for page in assessments if page.has_table],
+        "figure_pages": [page.page_number for page in assessments if page.has_figure],
+        "low_yield_pages": [
+            page.page_number
+            for page in assessments
+            if page.extraction_confidence == "low_yield_needs_ocr"
+        ],
+        "errors": [],
+    }
+    metadata.update(
+        {
+            "structure_detection_status": "completed",
+            "structure_detection": structure_detection,
+        }
+    )
+    if result.fallback_reason is not None:
+        metadata["ingestion_fallback"] = {
+            "reason": result.fallback_reason,
+            "pages_affected": result.fallback_pages or [],
+        }
+    document.metadata_ = metadata
