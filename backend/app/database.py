@@ -1,6 +1,7 @@
 import os
 from collections.abc import AsyncIterator
 from dotenv import load_dotenv
+from sqlalchemy.pool import NullPool
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 # Load environment variables from .env file
@@ -12,14 +13,16 @@ DATABASE_URL = os.getenv(
     "postgresql+asyncpg://postgres:postgres@relational_db:5432/postgres"
 )
 
+engine_kwargs = {"echo": False}
+if os.getenv("ASSESSMENT_TESTING") == "1":
+    # Pytest-asyncio creates isolated event loops; pooled asyncpg connections
+    # cannot safely cross them.
+    engine_kwargs["poolclass"] = NullPool
+else:
+    engine_kwargs.update(pool_size=10, max_overflow=20, pool_recycle=1800)
+
 # Create high-performance asynchronous SQLAlchemy engine
-engine = create_async_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_size=10,
-    max_overflow=20,
-    pool_recycle=1800,
-)
+engine = create_async_engine(DATABASE_URL, **engine_kwargs)
 
 # Create asynchronous session factory
 async_session = async_sessionmaker(
