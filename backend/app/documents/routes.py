@@ -58,9 +58,9 @@ async def upload_document(
     max_pdf_pages = get_max_pdf_pages()
     upload_storage_backend = get_upload_storage_backend()
 
-    # Resolve upload storage path
+    # Resolve upload storage path relative to the app/ directory
     upload_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../../../uploads")
+        os.path.join(os.path.dirname(__file__), "../uploads")
     )
     os.makedirs(upload_dir, exist_ok=True)
 
@@ -225,7 +225,7 @@ async def delete_document(
     # 1. Clean up physical file on disk
     upload_storage_backend = get_upload_storage_backend()
     upload_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../../../uploads")
+        os.path.join(os.path.dirname(__file__), "../uploads")
     )
     if upload_storage_backend == "local":
         local_path = os.path.join(upload_dir, f"{document.content_hash}.pdf")
