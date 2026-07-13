@@ -22,9 +22,9 @@ from app.models import Base, Document
 # Resolve directories relative to backend root
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 
-# Resolve upload storage path
+# Resolve upload storage path relative to the app/ directory
 UPLOAD_DIR = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "../../../uploads")
+    os.path.join(os.path.dirname(__file__), "../uploads")
 )
 
 # Establish isolated test engine and session factory
