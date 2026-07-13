@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.home.routes import router as home_router
+from app.documents.routes import router as documents_router
 
 app = FastAPI()
 
@@ -14,3 +15,4 @@ app.add_middleware(
 )
 
 app.include_router(home_router)
+app.include_router(documents_router)
