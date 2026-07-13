@@ -33,7 +33,7 @@ Docker containers are pre-packaged with all required libraries (`poppler-utils`,
 
 *   **Run a specific test file or directory:**
     ```sh
-    docker compose -p assessment exec backend pytest app/tests/test_ingestion.py
+    docker compose -p assessment exec backend pytest app/tests/test_schema_constraints.py
     ```
 
 ### 2.2 Running Tests Locally (Without Docker)
@@ -55,6 +55,7 @@ If you are developing locally with a Python virtual environment:
 Deterministic tests do not make active calls to external LLMs or vector database providers.
 - **LLM/API Mocking:** Pytest fixtures intercept and mock Anthropic (`anthropic`), OpenAI (`openai`), and OpenRouter (`openrouter`) endpoints.
 - **Database Isolation:** All tests run inside a PostgreSQL transaction that automatically rolls back when the test terminates, preventing database pollution.
+- **BC2 Migration Tests:** `backend/app/tests/test_migrations.py` runs `alembic upgrade head` and `alembic downgrade base` against the containerized Postgres database. `backend/app/tests/test_schema_constraints.py` rebuilds the migration head for constraint checks, then validates generated `content_tsv`, `documents.content_hash` uniqueness, `page_images` uniqueness, `query_audit_log.idempotency_key` uniqueness, `agentops_summary`, and document cascade deletion behavior.
 
 ---
 
