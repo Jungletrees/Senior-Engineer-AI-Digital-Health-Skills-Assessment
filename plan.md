@@ -1,69 +1,83 @@
 # Development Build Plan (plan.md)
 
-## Current Status: [ ] In Progress
-**Active Build Cycle:** BC3 — PDF Upload Endpoint & Validation Limits
+## Current Status: [x] BC5 Completed
+**Next Build Cycle:** BC6 — RAG Retrieval, Hybrid Search, Reranking Preparation
 
 ---
 
-## 📅 Completed Cycles
-- [x] **BC0 — Verify Starter Repo Integrity** (All services healthy, table test-fixture PDF available)
-- [x] **BC1 — Scaffolding & Multi-Agent Orchestration Commit** (All 12 files verified, committed with clean Git tracking)
-- [x] **BC2 — Database Schema & Alembic Migrations** (Alembic extensions, core tables, exact/semantic caches, logging, grading view, and constraints 100% verified and committed)
+## Completed Cycles
+- [x] **BC0 — Verify Starter Repo Integrity**
+- [x] **BC1 — Scaffolding & Multi-Agent Orchestration Commit**
+- [x] **BC2 — Database Schema & Alembic Migrations**
+- [x] **BC3 — PDF Upload Endpoint & Validation Limits**
+- [x] **BC4 — Structure Detection & Page Rasterization**
+- [x] **BC5 — Chunking & Embeddings**
 
 ---
 
-## 🎯 Objectives (BC3)
-Build the secure backend `/api/v1/documents` endpoint that accepts a PDF file upload, enforces size/page count/MIME-type validations at the API boundary, persists metadata into the `documents` table with `status=processing`, and handles content-hash deduplication. Create `GET` and `DELETE` endpoints for document polling, list display, and cascading delete management.
+## BC4 — Structure Detection & Page Rasterization
+
+**Status:** [x] Completed
+
+### Objectives
+Implement the automated PDF processing worker that transitions documents from `status=processing` to `status=indexed` after structure detection and page rasterization.
+
+### Completed Work
+- [x] Instrumented `backend/app/worker.py` with granular logging for document lookup, file resolution/loading, PDF parsing, structure detection, rasterization, chunk preparation, commits, rollbacks, and exception handling.
+- [x] Fixed upload path resolution so the worker reads PDFs from `backend/uploads`, matching the BC3 upload route.
+- [x] Stripped padded `CHAR(64)` document hashes before constructing file paths, fixing the early return that left documents stuck in `processing`.
+- [x] Persisted table/figure page images using the current `PageImage.storage_ref` schema.
+- [x] Verified worker completion updates documents to `indexed`.
+
+### Verification
+- [x] `docker compose -p assessment exec backend pytest app/tests/test_rasterization.py -vv -s`
+  - Result: `1 passed in 2.79s`
+
+### PR Draft
+- [x] `.codex/pull_requests/PR_BC4.md`
 
 ---
 
-## 📋 Build Cycle Plan (BC3)
+## BC5 — Chunking & Embeddings
 
-### Phase 1: Planning & Ingestion (Orchestrator)
-- [x] Read `/build-plans-architecture/BUILD_PLAN.md` and `/build-plans-architecture/ARCHITECTURE.md` §4.
-- [x] Update `plan.md` to initialize `BC3` objectives and test targets.
+**Status:** [x] Completed
 
-### Phase 2: Build Implementation (Backend Build Agent)
-- [ ] **Task 2.1**: Implement `POST /api/v1/documents` async FastAPI endpoint accepting a multipart file upload.
-- [ ] **Task 2.2**: Implement strict sequential validation at the API edge (before full database writing/processing):
-  - Check file size against `MAX_PDF_SIZE_MB` (reject `413`).
-  - Verify file headers via magic-byte checking (reject non-PDF fake extensions with `415`).
-  - Read page count cheaply (e.g., via `pdfplumber` metadata) and validate against `MAX_PDF_PAGES` (reject `413`).
-- [ ] **Task 2.3**: Implement `SHA-256` content-hash computation on upload.
-- [ ] **Task 2.4**: Implement idempotent content-hash dedup: if a matching hash already exists in the database and is `status=indexed`, short-circuit and return its existing ID and status rather than re-creating.
-- [ ] **Task 2.5**: Implement local storage writing (`UPLOAD_STORAGE_BACKEND=local`) for new PDFs.
-- [ ] **Task 2.6**: Implement read endpoints `GET /api/v1/documents/{document_id}` (polling) and `GET /api/v1/documents` (documents listing).
-- [ ] **Task 2.7**: Implement `DELETE /api/v1/documents/{document_id}` using existing Postgres cascading deletes.
-- [ ] **Task 2.8**: Add a clear placeholder stub for JWT authentication dependencies, noting that full auth lands in `BC15`.
+### Objectives
+Implement deterministic, structure-aware chunking and embedding persistence into the `chunks` table using configured chunk size, overlap, and embedding model settings.
 
-### Phase 3: Testing & Verification (Test Agent)
-- [ ] **Task 3.1**: Write backend unit tests (`test_upload_validation.py`) verifying:
-  - File header magic-byte validation correctly rejects a renamed `.txt` or `.png` renamed to `.pdf` with `415`.
-  - Oversized files (exceeding `MAX_PDF_SIZE_MB`) are correctly rejected with `413`.
-  - Oversized page counts (exceeding `MAX_PDF_PAGES`) are correctly rejected with `413`.
-- [ ] **Task 3.2**: Write integration tests (`test_upload_integration.py`) verifying:
-  - Successful upload of a valid PDF creates a `documents` row with `status=processing`.
-  - Repeat upload of an identical PDF triggers idempotent short-circuit (dedup).
-  - Status polling (`GET`) and listing returns correct metadata and statuses.
-  - Document deletion (`DELETE`) removes physical file and cascades cleanly across SQL rows.
-- [ ] **Task 3.3**: Execute the tests inside the backend container to confirm a green state.
+### Completed Work
+- [x] Added `backend/app/documents/chunking.py` with token-bounded chunking from structured PDF blocks.
+- [x] Implemented heading-aware context injection and table-preserving chunk boundaries.
+- [x] Honored `CHUNK_SIZE_TOKENS` and `CHUNK_OVERLAP_RATIO`.
+- [x] Added OpenAI/Voyage embedding HTTP clients selected by `EMBEDDING_MODEL`.
+- [x] Added deterministic local/test embedding fallback when hosted provider keys are absent.
+- [x] Added embedding dimension validation against `EMBEDDING_DIM`.
+- [x] Persisted chunk rows with pgvector embeddings while relying on Postgres to generate `content_tsv`.
+- [x] Integrated chunking/embedding into `process_document` before final `indexed` status update.
 
-### Phase 4: Workflow Tracking & Commit (GitPR Agent)
-- [ ] Stage and commit upload controllers, service schemas, and tests in logical micro-commits.
-- [ ] Generate the pull request draft at `.codex/pull_requests/PR_BC3.md`.
+### Verification
+- [x] `docker compose -p assessment exec backend pytest app/tests/test_chunking.py -vv -s`
+  - Result: `6 passed in 2.81s`
+- [x] `docker compose -p assessment exec backend pytest`
+  - Result: `20 passed, 12 skipped, 4 warnings in 10.25s`
 
-### Phase 5: Cycle Closure (Orchestrator)
-- [ ] Mark BC3 as `[x] Completed` in `plan.md`.
-- [ ] Transition to structure detection and page rasterization (BC4).
+### PR Draft
+- [x] `.codex/pull_requests/PR_BC5.md`
 
 ---
 
-## 🧪 Test Coverage Goals
-*   **Unit Tests**: Validation gates (size, MIME, page count) cleanly tested with robust mock files.
-*   **Integration Tests**: File upload, dedup, read, and delete endpoints 100% covered.
+## BC6 — RAG Retrieval, Hybrid Search, Reranking Preparation
 
----
+**Status:** [ ] Planned
 
-## 🚀 Git & PR Tracking
-*   **GitPR Agent Status**: Ready.
-*   **Primary Branch**: `master`
+### Objectives
+Build the retrieval layer that turns indexed chunks into ranked context for the future chat endpoint.
+
+### Implementation Plan
+- [ ] Implement lexical search over `chunks.content_tsv` with `websearch_to_tsquery`.
+- [ ] Implement vector search over `chunks.embedding` using pgvector cosine distance and transaction-local `SET LOCAL hnsw.ef_search`.
+- [ ] Merge lexical and vector candidates with Reciprocal Rank Fusion (`RRF_K=60`) strictly as candidate ordering, not confidence.
+- [ ] Add retrieval result models carrying `chunk_id`, document metadata, page number, section path, lexical rank, vector rank, and fused score.
+- [ ] Prepare reranker interface and deterministic fallback wiring without enabling BC8 confidence gating yet.
+- [ ] Add retrieval tests for lexical-only, vector-only, hybrid fusion ordering, deleted-document cascade behavior, and per-transaction HNSW setting.
+- [ ] Update `tests-README.md` and draft `.codex/pull_requests/PR_BC6.md` after verification.
