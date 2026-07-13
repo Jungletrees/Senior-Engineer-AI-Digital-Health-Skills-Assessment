@@ -54,6 +54,8 @@ postgres_data/
 pgdata/
 docker_data/
 data/
+uploads/
+page_images/
 
 # Local database dump files
 *.sql
