@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -113,6 +114,75 @@ class HostedEmbeddingClient:
         return [item["embedding"] for item in payload["data"]]
 
 
+class GeminiEmbeddingClient:
+    """Google Generative Language embeddings.
+
+    `gemini-embedding-001` is natively 3072-dimensional but supports Matryoshka
+    truncation, so `outputDimensionality` is used to request exactly `EMBEDDING_DIM`
+    (1536). That is what lets Gemini be swapped in without a schema migration — the
+    pgvector column is fixed-width, so a model whose dimension cannot be set would
+    require re-creating the column and re-indexing the whole corpus.
+
+    Truncated Matryoshka vectors are NOT unit-length, so they are re-normalized here.
+    Retrieval uses cosine distance, which normalizes internally, but the semantic cache
+    compares raw similarity values — leaving them unnormalized would make its threshold
+    mean something different for Gemini than for OpenAI.
+    """
+
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+    def __init__(
+        self,
+        model: str | None = None,
+        dimensions: int | None = None,
+        timeout_seconds: float = 60.0,
+    ) -> None:
+        self.model = model or get_embedding_model()
+        self.dimensions = dimensions or get_embedding_dim()
+        self.timeout_seconds = timeout_seconds
+
+    # `batchEmbedContents` rejects more than 100 requests in one call with a bare 400. A
+    # single document produces far more chunks than that, so the whole document failed to
+    # index. Batches are split here rather than left to the caller.
+    BATCH_LIMIT = 100
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        if not texts:
+            return []
+        api_key = os.getenv("GEMINI_API_KEY", "")
+        if not _is_real_key(api_key):
+            raise RuntimeError("GEMINI_API_KEY is not configured for hosted embeddings")
+
+        model_path = f"models/{self.model}"
+        vectors: list[list[float]] = []
+        async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            for start in range(0, len(texts), self.BATCH_LIMIT):
+                window = texts[start : start + self.BATCH_LIMIT]
+                payload = {
+                    "requests": [
+                        {
+                            "model": model_path,
+                            "content": {"parts": [{"text": text}]},
+                            "outputDimensionality": self.dimensions,
+                            # Chunks and queries share one interface, so a symmetric task
+                            # type is used rather than silently mislabelling one side.
+                            "taskType": "SEMANTIC_SIMILARITY",
+                        }
+                        for text in window
+                    ]
+                }
+                response = await client.post(
+                    f"{self.BASE_URL}/{model_path}:batchEmbedContents",
+                    headers={"x-goog-api-key": api_key},
+                    json=payload,
+                )
+                response.raise_for_status()
+                vectors.extend(
+                    _l2_normalize(item["values"]) for item in response.json()["embeddings"]
+                )
+        return vectors
+
+
 class DeterministicEmbeddingClient:
     """Local deterministic fallback used when hosted provider keys are absent."""
 
@@ -143,15 +213,50 @@ def get_embedding_dim() -> int:
     return int(os.getenv("EMBEDDING_DIM", "1536"))
 
 
+def embedding_key_name(model: str) -> str:
+    """Which provider key a given embedding model needs."""
+    if _is_voyage_model(model):
+        return "VOYAGE_API_KEY"
+    if _is_gemini_model(model):
+        return "GEMINI_API_KEY"
+    return "OPENAI_API_KEY"
+
+
 def get_embedding_client() -> EmbeddingClient:
-    """Return the configured embedding client with a local fallback for dev/test."""
+    """Route to the cheapest configured embedding provider; degrade if there is none.
+
+    The fallback is deliberate — the stack must run with no keys — but it is NOT the
+    product: hash-based vectors make semantic search meaningless, so only the lexical half
+    of hybrid retrieval does anything. `/chat` therefore returns a `model_status` telling
+    the user their search is limited, rather than letting them judge retrieval quality on a
+    path they did not know they were on.
+
+    An explicitly pinned EMBEDDING_MODEL wins over routing: unlike a generation model, the
+    embedding model cannot be swapped freely — the pgvector column is fixed-width and the
+    stored vectors were produced by one specific model, so silently routing to a different
+    one would compare vectors across models.
+    """
+    from app.core.model_router import is_real_key, resolve_embedding
+
     model = get_embedding_model()
-    key_name = "VOYAGE_API_KEY" if _is_voyage_model(model) else "OPENAI_API_KEY"
-    if _is_real_key(os.getenv(key_name, "")):
+    key_name = embedding_key_name(model)
+
+    # A pinned model whose key is present always wins — see docstring.
+    if is_real_key(os.getenv(key_name, "")):
+        if _is_gemini_model(model):
+            return GeminiEmbeddingClient(model=model)
         return HostedEmbeddingClient(model=model)
 
+    routed = resolve_embedding()
+    if routed is not None:
+        logger.info("embedding.routed provider=%s model=%s", routed.provider, routed.model)
+        if routed.provider == "gemini":
+            return GeminiEmbeddingClient(model=routed.model)
+        return HostedEmbeddingClient(model=routed.model)
+
     logger.warning(
-        "embedding.provider_key_missing model=%s key=%s fallback=deterministic",
+        "embedding.no_provider_configured model=%s key=%s fallback=deterministic "
+        "(semantic search is effectively disabled)",
         model,
         key_name,
     )
@@ -518,6 +623,18 @@ def _hash_embedding(text_value: str, dimensions: int) -> list[float]:
 
 def _is_voyage_model(model: str) -> bool:
     return model.lower().startswith("voyage")
+
+
+def _is_gemini_model(model: str) -> bool:
+    return model.lower().startswith(("gemini", "text-embedding-004", "models/gemini"))
+
+
+def _l2_normalize(values: list[float]) -> list[float]:
+    """Matryoshka-truncated Gemini vectors are not unit-length; retrieval assumes they are."""
+    magnitude = math.sqrt(sum(value * value for value in values))
+    if magnitude == 0.0:
+        return values
+    return [value / magnitude for value in values]
 
 
 def _is_real_key(value: str) -> bool:

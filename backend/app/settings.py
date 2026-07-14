@@ -7,6 +7,15 @@ from typing import Any
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Production default. Gemini entries are added by `.env` for the local reviewer stack; see
+# `.env.example` for why the local stack runs a different provider from the production one.
+_DEFAULT_MODEL_PRICING_JSON = (
+    '{"claude-sonnet-5":{"input_per_mtok":3.0,"output_per_mtok":15.0},'
+    '"claude-haiku-4-5":{"input_per_mtok":0.8,"output_per_mtok":4.0},'
+    '"gemini-3.1-flash-lite":{"input_per_mtok":0.10,"output_per_mtok":0.40},'
+    '"gemini-2.5-flash-lite":{"input_per_mtok":0.10,"output_per_mtok":0.40}}'
+)
+
 
 class Settings(BaseSettings):
     """Centralized environment-backed settings used by agent orchestration."""
@@ -26,6 +35,9 @@ class Settings(BaseSettings):
     rerank_provider: str = ""
     retrieval_agent_confidence_threshold: float = 0.55
     retrieval_agent_max_iterations: int = 3
+    # "auto": route each task to the cheapest configured provider (see core/model_router).
+    # "manual": honor GENERATION_MODEL_PRIMARY / _FAST exactly as pinned.
+    model_routing: str = "auto"
     generation_model_primary: str = "claude-sonnet-5"
     generation_model_fast: str = "claude-haiku-4-5"
     exact_cache_ttl_seconds: int = 86400
@@ -59,10 +71,7 @@ class Settings(BaseSettings):
     anomaly_detection_zscore_threshold: float = 3.0
     anomaly_detection_baseline_lookback_days: int = 14
     scheduler_leader_lock_key: int = 91537
-    model_pricing_json: str = (
-        '{"claude-sonnet-5":{"input_per_mtok":3.0,"output_per_mtok":15.0},'
-        '"claude-haiku-4-5":{"input_per_mtok":0.8,"output_per_mtok":4.0}}'
-    )
+    model_pricing_json: str = _DEFAULT_MODEL_PRICING_JSON
     grounding_numeric_check_enabled: bool = True
     grounding_numeric_tolerance: float = 0.0
     # A factual answer with no surviving citation cannot be shown as grounded; it is
@@ -103,7 +112,11 @@ class Settings(BaseSettings):
 
     @property
     def model_pricing(self) -> dict[str, dict[str, float]]:
-        parsed: Any = json.loads(self.model_pricing_json or "{}")
+        # Compose passes an allow-listed env block, and an unset variable arrives as an
+        # empty string. Treating that as "no pricing" would silently zero out every cost
+        # figure in the audit log, so a blank value falls back to the default table.
+        raw = (self.model_pricing_json or "").strip() or _DEFAULT_MODEL_PRICING_JSON
+        parsed: Any = json.loads(raw)
         if not isinstance(parsed, dict):
             return {}
         pricing: dict[str, dict[str, float]] = {}

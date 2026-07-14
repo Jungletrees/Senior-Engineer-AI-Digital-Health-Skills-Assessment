@@ -13,6 +13,7 @@ from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.tracing import traced
+from app.documents.chunking import _is_real_key
 from app.documents.processing import (
     detect_page_structure,
     extract_text_ocr_fallback,
@@ -115,7 +116,10 @@ class AnthropicMessagesClient:
         tools: list[dict[str, Any]],
         model: str,
     ) -> list[ToolUse]:
-        if not settings.anthropic_api_key:
+        # A placeholder key is truthy, so `if not settings.anthropic_api_key` let it through
+        # and every document paid a doomed 401 round trip before falling back. Reject the
+        # placeholder up front and go straight to the deterministic path.
+        if not _is_real_key(settings.anthropic_api_key):
             raise RuntimeError("ANTHROPIC_API_KEY is not configured for ingestion agent")
 
         async with httpx.AsyncClient(timeout=60.0) as client:

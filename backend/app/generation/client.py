@@ -8,9 +8,7 @@ import re
 
 from app.agents.orchestrator import GenerationPayload
 from app.chainlit_steps import chainlit_step
-# Same placeholder-key check the embedding client uses, so "your-anthropic-key" from
-# .env.example never selects a hosted client that would 401 on every request.
-from app.documents.chunking import _is_real_key
+from app.core.model_router import ModelOption, Task, resolve
 from app.generation.result import GenerationClient, GenerationResult
 from app.settings import settings
 
@@ -21,7 +19,9 @@ __all__ = [
     "DeterministicGenerationClient",
     "GenerationClient",
     "GenerationResult",
+    "Task",
     "get_generation_client",
+    "routed_model",
 ]
 
 # The presenter recognizes this wording as a no-answer and returns the canonical
@@ -40,22 +40,65 @@ _STOPWORDS = frozenset(
 )
 
 
-def get_generation_client() -> GenerationClient:
-    """Use the hosted model when a real key is configured; otherwise stay local.
+def generation_key_name(model: str) -> str:
+    """Which provider key a given generation model needs."""
+    lowered = model.lower()
+    if lowered.startswith("gemini"):
+        return "GEMINI_API_KEY"
+    if lowered.startswith(("gpt-", "o1", "o3", "o4")):
+        return "OPENAI_API_KEY"
+    return "ANTHROPIC_API_KEY"
 
-    The deterministic client cannot interpret a question — it can only quote back sentences
-    that share words with it. That is adequate for tests and for a keyless demo, but it is
-    not a RAG system a user would call intelligent, which is why the hosted client is the
-    real path.
+
+def build_client(option: ModelOption) -> GenerationClient:
+    """Construct the client for a routed provider."""
+    api_key = os.getenv(option.key_name, "")
+    if option.provider == "gemini":
+        from app.generation.gemini_client import GeminiGenerationClient
+
+        return GeminiGenerationClient(api_key=api_key)
+    if option.provider == "openai":
+        from app.generation.openai_client import OpenAIGenerationClient
+
+        return OpenAIGenerationClient(api_key=api_key, model=option.model)
+
+    from app.generation.anthropic_client import AnthropicGenerationClient
+
+    return AnthropicGenerationClient(api_key=api_key)
+
+
+def get_generation_client(task: Task = Task.CHAT) -> GenerationClient:
+    """Route to the cheapest configured provider for the task; degrade if there is none.
+
+    The deterministic client cannot interpret a question — it can only extract sentences
+    that share words with it. That is a legitimate offline mode, but it is NOT the product,
+    which is why `/chat` returns a `model_status` telling the user plainly when they are on
+    it rather than letting them judge the system on a path they did not know they were on.
     """
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    if _is_real_key(api_key):
-        from app.generation.anthropic_client import AnthropicGenerationClient
+    option = resolve(task)
+    if option is None:
+        logger.warning(
+            "generation.no_provider_configured task=%s fallback=deterministic "
+            "(answers are extracted, not generated)",
+            task.value,
+        )
+        return DeterministicGenerationClient()
 
-        return AnthropicGenerationClient(api_key=api_key)
+    logger.info(
+        "generation.routed task=%s provider=%s model=%s",
+        task.value,
+        option.provider,
+        option.model,
+    )
+    return build_client(option)
 
-    logger.warning("generation.provider_key_missing key=ANTHROPIC_API_KEY fallback=deterministic")
-    return DeterministicGenerationClient()
+
+def routed_model(task: Task = Task.CHAT) -> str:
+    """The model name the router picked, for payload assembly and cost accounting."""
+    option = resolve(task)
+    if option is not None:
+        return option.model
+    return settings.generation_model_primary
 
 
 class DeterministicGenerationClient:

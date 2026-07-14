@@ -16,6 +16,9 @@ class BackendChatResponse:
     session_id: str | None
     answer: str
     citations: list[dict[str, Any]] = field(default_factory=list)
+    # Present when no AI model is configured: the answer was extracted from the documents
+    # rather than written. Showing it is what keeps the fallback honest.
+    notice: str | None = None
 
 
 class BackendChatClient:
@@ -51,10 +54,12 @@ class BackendChatClient:
 
         response.raise_for_status()
         data = response.json()
+        status = data.get("model_status") or {}
         return BackendChatResponse(
             session_id=str(data["session_id"]),
             answer=str(data["answer"]),
             citations=list(data.get("citations") or []),
+            notice=status.get("notice") if status.get("mode") == "degraded" else None,
         )
 
 
@@ -74,14 +79,23 @@ THINKING_MESSAGE = "_Searching your documents…_"
 REFERENCES_HEADING = "Sources"
 
 
-def render_answer_with_citations(answer: str, citations: list[dict[str, Any]]) -> str:
+def render_answer_with_citations(
+    answer: str,
+    citations: list[dict[str, Any]],
+    notice: str | None = None,
+) -> str:
     """Render the answer the backend already presented, plus its reference list.
 
     The backend presenter owns sentence-end superscripts and the reference text, so this
     only mirrors that output. A refusal or no-answer has no citations and must not get an
     empty reference list.
+
+    `notice` is set when no AI model is configured: the answer was extracted from the
+    documents rather than written, and the user is told so above the answer.
     """
     body = answer.rstrip()
+    if notice:
+        body = f"> \u26a0 {notice}\n\n{body}"
     references = [
         _render_reference(citation)
         for citation in citations
@@ -176,7 +190,10 @@ async def handle_message(message: cl.Message) -> None:
 
     if response.session_id:
         cl.user_session.set("backend_session_id", response.session_id)
-    await _replace(pending, render_answer_with_citations(response.answer, response.citations))
+    await _replace(
+        pending,
+        render_answer_with_citations(response.answer, response.citations, response.notice),
+    )
 
 
 async def _replace(pending: Any, content: str) -> None:

@@ -27,6 +27,13 @@ type ChatMessage = {
   isError?: boolean;
 };
 
+type ModelStatus = {
+  mode: "full" | "degraded";
+  provider: string | null;
+  model: string | null;
+  notice: string | null;
+};
+
 type ChatResponse = {
   session_id: string;
   answer: string;
@@ -34,6 +41,7 @@ type ChatResponse = {
   references_heading?: string;
   cache_status: string;
   output_filter_status: string;
+  model_status?: ModelStatus;
 };
 
 const sampleQuestions = [
@@ -47,6 +55,10 @@ export default function ChatPage() {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isSending, setIsSending] = useState(false);
+  // When no model key is configured the answer is extracted from the documents rather than
+  // written. Saying so is the difference between an honest fallback and a product that
+  // looks like it works but quietly answers worse.
+  const [notice, setNotice] = useState<string | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -71,6 +83,11 @@ export default function ChatPage() {
     try {
       const response: ChatResponse = await postChat(question, sessionId);
       setSessionId(response.session_id);
+      setNotice(
+        response.model_status?.mode === "degraded"
+          ? response.model_status.notice ?? null
+          : null,
+      );
       setMessages((current) => [
         ...current,
         {
@@ -98,6 +115,12 @@ export default function ChatPage() {
 
   return (
     <section className="chat-surface" aria-label="Chat with your documents">
+      {notice ? (
+        <p className="model-notice" role="status">
+          <span aria-hidden="true">⚠</span> {notice}
+        </p>
+      ) : null}
+
       <div className="chat-transcript" role="log" aria-live="polite">
         {messages.length === 0 ? (
           <div className="chat-welcome">

@@ -34,9 +34,10 @@ from app.chat.response_presenter import (
 )
 from app.chainlit_steps import chainlit_step
 from app.core.cost import compute_cost
+from app.core.model_router import current_status
 from app.core.errors import RateLimitExceededError, ValidationError
 from app.database import get_db
-from app.generation.client import GenerationClient, get_generation_client
+from app.generation.client import GenerationClient, get_generation_client, routed_model
 from app.retrieval.models import RetrievalCandidate
 from app.security.auth import require_auth
 from app.security.guardrails import filter_output, validate_chat_message_for_audit
@@ -63,6 +64,21 @@ class Citation(BaseModel):
     reference: str
 
 
+class ModelStatusPayload(BaseModel):
+    """Tells the user which brain answered them.
+
+    When no provider key is configured the answer is extracted from their documents rather
+    than written for them. Returning that as a field the UI renders — instead of quietly
+    serving a worse answer — is the difference between an honest fallback and a broken
+    product that looks like it works.
+    """
+
+    mode: str  # "full" | "degraded"
+    provider: str | None = None
+    model: str | None = None
+    notice: str | None = None
+
+
 class ChatResponse(BaseModel):
     session_id: UUID
     answer: str
@@ -73,6 +89,17 @@ class ChatResponse(BaseModel):
     query_audit_log_id: UUID
     output_filter_status: str
     output_filter_reason: str | None = None
+    model_status: ModelStatusPayload = Field(default_factory=lambda: _model_status())
+
+
+def _model_status() -> ModelStatusPayload:
+    status = current_status()
+    return ModelStatusPayload(
+        mode=status.mode,
+        provider=status.provider,
+        model=status.model,
+        notice=status.notice,
+    )
 
 
 @router.post("/chat", response_model=None)
@@ -156,6 +183,8 @@ async def chat(
             query=payload.message,
             session_id=session_id,
             db=db,
+            # The router, not the pinned default, decides which model answers.
+            model=routed_model(),
             retrieval_agent=getattr(request.app.state, "retrieval_agent", None),
             query_audit_log_id=audit_id,
             embedding_client=_embedding_client(request),

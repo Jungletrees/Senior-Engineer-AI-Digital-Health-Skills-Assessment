@@ -185,17 +185,36 @@ body {
 
 /* ------------------------------------------------------------------- chat */
 
+/* Flex, not grid: the notice row is conditional, and fixed grid rows would leave the
+   transcript in an `auto` track (and stop it flexing) whenever the notice is absent. */
 .chat-surface {
-  display: grid;
-  grid-template-rows: minmax(0, 1fr) auto auto;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
   min-width: 0;
   height: 100vh;
   padding: 24px;
 }
 
+/* Shown when no model key is configured: the answer was extracted, not written. */
+.model-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 1px solid #e2c88a;
+  border-left: 4px solid #b36b00;
+  border-radius: 8px;
+  background: #fdf6e6;
+  color: #6b4a00;
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
 .chat-transcript {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 14px;
   min-height: 0;

@@ -9,6 +9,18 @@ services:
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       VOYAGE_API_KEY: ${VOYAGE_API_KEY:-}
+      # Model routing. These MUST be listed here: compose passes an explicit allow-list, so a
+      # variable set in .env but missing from this block silently falls back to the default in
+      # settings.py — the container would keep using Claude/OpenAI while .env said Gemini.
+      # "auto": route each task to the cheapest configured provider (core/model_router.py).
+      # "manual": honor the pinned model names below exactly.
+      MODEL_ROUTING: ${MODEL_ROUTING:-auto}
+      GENERATION_MODEL_PRIMARY: ${GENERATION_MODEL_PRIMARY:-claude-sonnet-5}
+      GENERATION_MODEL_FAST: ${GENERATION_MODEL_FAST:-claude-haiku-4-5}
+      JUDGE_MODEL: ${JUDGE_MODEL:-claude-haiku-4-5}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
+      MODEL_PRICING_JSON: ${MODEL_PRICING_JSON:-}
       JWT_SECRET: ${JWT_SECRET:-dev-only-change-me}
       CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:-}
       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000,http://localhost:8000}

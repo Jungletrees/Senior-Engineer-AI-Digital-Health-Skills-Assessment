@@ -14,6 +14,7 @@ import pytest
 from app.agents.orchestrator import GenerationPayload
 from app.generation.anthropic_client import NO_ANSWER_ANSWER, AnthropicGenerationClient
 from app.generation.client import DeterministicGenerationClient, get_generation_client
+from app.settings import settings
 from app.retrieval.models import RetrievalCandidate
 
 
@@ -67,16 +68,106 @@ def _payload(content: list | None = None) -> GenerationPayload:
     )
 
 
-def test_placeholder_key_does_not_select_the_hosted_client(monkeypatch) -> None:
-    """`.env.example` ships ANTHROPIC_API_KEY=your-anthropic-key.
+def test_provider_is_chosen_from_the_configured_model(monkeypatch) -> None:
+    """Switching vendors must be a config change, not a code change."""
+    from app.generation.client import generation_key_name
+    from app.documents.chunking import embedding_key_name
 
-    If that counted as configured, every chat turn would 401 at answer time instead of
-    falling back to the local client.
+    assert generation_key_name("gemini-2.5-flash") == "GEMINI_API_KEY"
+    assert generation_key_name("claude-sonnet-5") == "ANTHROPIC_API_KEY"
+    assert embedding_key_name("gemini-embedding-001") == "GEMINI_API_KEY"
+    assert embedding_key_name("text-embedding-3-small") == "OPENAI_API_KEY"
+    assert embedding_key_name("voyage-3") == "VOYAGE_API_KEY"
+
+
+def test_gemini_key_selects_the_gemini_client(monkeypatch) -> None:
+    from app.generation.gemini_client import GeminiGenerationClient
+
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "VOYAGE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSyD-realish-gemini-key-000000")
+
+    assert isinstance(get_generation_client(), GeminiGenerationClient)
+
+
+def test_openai_key_selects_the_openai_client(monkeypatch) -> None:
+    from app.generation.openai_client import OpenAIGenerationClient
+
+    for name in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "VOYAGE_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-proj-realish-openai-key-00000")
+
+    assert isinstance(get_generation_client(), OpenAIGenerationClient)
+
+
+def test_a_blocked_gemini_candidate_does_not_crash(monkeypatch) -> None:
+    """A safety block returns a candidate with no `content`.
+
+    A naive candidates[0]["content"]["parts"] read would raise, turning a refusal into a
+    500 instead of the honest no-answer.
     """
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "your-anthropic-key")
+    from app.generation.gemini_client import _first_text
+
+    assert _first_text({"candidates": [{"finishReason": "SAFETY"}]}) == ""
+    assert _first_text({}) == ""
+    assert _first_text(
+        {"candidates": [{"content": {"parts": [{"text": "The dose is 5 ml.[cite:1]"}]}}]}
+    ) == "The dose is 5 ml.[cite:1]"
+
+
+def test_gemini_reasoning_parts_never_reach_the_answer() -> None:
+    """Gemini 3 returns reasoning as parts flagged `thought: true`, interleaved with the answer.
+
+    Concatenating them would splice the model's private reasoning into the user-facing
+    answer and straight past the presenter into the chat window.
+    """
+    from app.generation.gemini_client import _first_text
+
+    answer = _first_text(
+        {
+            "candidates": [
+                {
+                    "content": {
+                        "parts": [
+                            {"text": "Let me check the context for a dose...", "thought": True},
+                            {"text": "The dose is 5 ml.[cite:1]"},
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+
+    assert answer == "The dose is 5 ml.[cite:1]"
+    assert "Let me check" not in answer
+
+
+def test_blank_model_pricing_falls_back_to_the_default_table() -> None:
+    """Compose passes an allow-list; an unset variable arrives as an empty string.
+
+    Treating that as "no pricing" would silently zero every cost figure in the audit log.
+    """
+    import app.settings as settings_module
+
+    blank = settings_module.Settings(model_pricing_json="")
+    assert blank.model_pricing["gemini-3.1-flash-lite"]["input_per_mtok"] > 0
+
+
+def test_placeholder_keys_do_not_select_a_hosted_client(monkeypatch) -> None:
+    """`.env.example` ships placeholder keys for every provider.
+
+    If a placeholder counted as configured, every chat turn would fail at answer time
+    instead of falling back to the local client and telling the user.
+    """
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "your-anthropic-api-key-here")
+    monkeypatch.setenv("OPENAI_API_KEY", "your-openai-api-key-here")
+    monkeypatch.setenv("GEMINI_API_KEY", "your-gemini-api-key-here")
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+
     assert isinstance(get_generation_client(), DeterministicGenerationClient)
 
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    for name in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
     assert isinstance(get_generation_client(), DeterministicGenerationClient)
 
 
