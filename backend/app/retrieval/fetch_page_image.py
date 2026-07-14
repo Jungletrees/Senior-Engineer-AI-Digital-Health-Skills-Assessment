@@ -6,9 +6,11 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.tracing import traced
+from app.chainlit_steps import chainlit_step
 from app.retrieval.models import PageImageResult, RetrievalCandidate
 
 
+@chainlit_step("fetch_page_image", "tool")
 @traced(agent_name="retrieval_agent")
 async def fetch_page_image(
     db: AsyncSession,

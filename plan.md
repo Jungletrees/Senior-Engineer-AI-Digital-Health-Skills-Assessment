@@ -1,7 +1,7 @@
 # Development Build Plan (plan.md)
 
-## Current Status: [x] BC9/BC10/BC11 Completed
-**Next Build Cycle:** BC12 - Chat Endpoint, Chainlit Wiring, Session Persistence, and Multimodal Generation
+## Current Status: [ ] BC12/BC13/BC14/BC15 Implemented - Backend Image Verification Blocked
+**Active Build Cycle:** BC12-BC15 - Chat, Documents UI, Guardrails, Auth, and Rate Limiting
 
 ---
 
@@ -106,9 +106,37 @@ Implement exact-cache lookup/write, semantic-cache lookup/write, prompt-cache co
 
 ---
 
-## Next Cycle: BC12
+## Active Cycle: BC12-BC15
 
-**Status:** [ ] Planned
+**Status:** [ ] Implemented; backend Docker verification blocked by image build failure
 
 ### Objective
-Build the `/chat` endpoint, Chainlit wiring, session/message persistence, cache-before-corpus flow, idempotency handling, multimodal generation calls, and BC10 Orchestrator integration.
+Implement the chat endpoint and Chainlit wiring, the Next.js `/documents` upload page, real guardrails/output filtering, JWT document-management auth, and per-session/per-IP rate limiting.
+
+### Planned Work
+- [ ] **BC12:** Add `POST /api/v1/chat`, idempotency via `query_audit_log.idempotency_key`, cache-before-retrieval flow, session/message persistence, conversation window/summary helpers, deterministic generation client boundary, RetrievalAgent/Orchestrator integration, and Chainlit step wrappers.
+- [ ] **BC13:** Add backend upload-limits config endpoint, build frontend `/documents` upload/manage UI, fetch limits from backend, implement progress/polling/delete/empty state/auth-header stub, and add deterministic frontend tests.
+- [ ] **BC14:** Add router/app-level input validation, tool-result sanitization, real output filter, cache eligibility wiring, security headers, and configured CORS.
+- [ ] **BC15:** Add JWT session endpoint, auth dependency, document route protection, anonymous chat flag behavior, rate limiting before cache lookup, `query_audit_log.client_ip` migration, and auth/rate-limit tests.
+
+### Expected Test Coverage
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_chat.py -vv`
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_upload_config.py -vv`
+- [ ] Frontend deterministic test command from `frontend/package.json`
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_guardrails.py -vv`
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_cache.py -vv`
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_auth.py -vv`
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_rate_limit.py -vv`
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_migrations.py -vv`
+- [ ] `docker compose -p assessment exec backend pytest app/tests/test_documents.py -vv`
+- [ ] `docker compose -p assessment exec backend pytest`
+
+### Verification Status
+- [x] `python3 -m compileall backend/app`
+  - Result: backend package compile completed successfully.
+- [x] `npm test --prefix frontend -- --runInBand`
+  - Result: `1..1`, `# tests 1`, `# pass 1`, `# fail 0`, duration `1696.303333ms`.
+- [ ] `docker compose -p assessment up -d --build backend frontend`
+  - Blocked: backend image build failed during `pip install --default-timeout=180 --retries=10 -r /requirements.txt` with a package hash mismatch:
+    `Expected sha256 edd81538446786ec3b73972543e53bb43bcaf0bfc8ef76cb679fcc390ffe136d; Got 2ba3fbf7a9d0eb89c59f58dac6f4623089aa375ac40569fcbad9af9e2b646235`.
+  - Impact: backend targeted pytest commands remain pending until the image build is repaired and rebuilt.

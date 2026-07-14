@@ -66,7 +66,6 @@ async def write_exact_cache(
     eligible: bool,
 ) -> None:
     """Write an exact-cache row if the answer is cache-eligible."""
-    # TODO(BC14): eligible = output_filter_status == "passed"
     if not eligible:
         return
     expires_at = datetime.now(UTC) + timedelta(seconds=settings.exact_cache_ttl_seconds)

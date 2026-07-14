@@ -1,10 +1,8 @@
 import os
 import hashlib
 import io
-from typing import Any
 from uuid import UUID
 import pdfplumber
-from dotenv import load_dotenv
 
 from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Header, status
 from sqlalchemy import select, desc
@@ -12,22 +10,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Document
-
-# Load environment variables
-load_dotenv()
+from app.security.auth import AuthSession, require_auth
+from app.settings import settings
 
 # Router setup
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
 
 
 def get_max_pdf_size_mb() -> int:
-    """Read the maximum allowed PDF size (in MB) from environment."""
-    return int(os.getenv("MAX_PDF_SIZE_MB", "20"))
+    """Read the maximum allowed PDF size (in MB) from settings."""
+    return settings.max_pdf_size_mb
 
 
 def get_max_pdf_pages() -> int:
-    """Read the maximum allowed PDF pages from environment."""
-    return int(os.getenv("MAX_PDF_PAGES", "300"))
+    """Read the maximum allowed PDF pages from settings."""
+    return settings.max_pdf_pages
 
 
 def get_upload_storage_backend() -> str:
@@ -35,22 +32,11 @@ def get_upload_storage_backend() -> str:
     return os.getenv("UPLOAD_STORAGE_BACKEND", "local")
 
 
-async def get_current_user_stub(authorization: str | None = Header(None)) -> dict[str, Any]:
-    """Stub dependency for authentication, pending robust JWT implementation in BC15."""
-    # This is a pass-through dependency to satisfy the API contract.
-    # In BC15, this will extract, verify, and parse the signed JWT from the Header.
-    return {
-        "user_id": "placeholder_session_user", 
-        "role": "authenticated_user", 
-        "stubbed": True
-    }
-
-
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def upload_document(
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: dict[str, Any] = Depends(get_current_user_stub),
+    current_user: AuthSession = Depends(require_auth),
 ):
     """Enforce size/MIME/page limit checks, handle content-hash dedup, and accept PDF for ingestion."""
     # Retrieve limits dynamically using getter helpers for perfect test mock surface
@@ -159,7 +145,7 @@ async def upload_document(
 async def get_document_status(
     document_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: dict[str, Any] = Depends(get_current_user_stub),
+    current_user: AuthSession = Depends(require_auth),
 ):
     """Retrieve document record for processing status polling."""
     stmt = select(Document).where(Document.id == document_id)
@@ -185,7 +171,7 @@ async def get_document_status(
 @router.get("")
 async def list_documents(
     db: AsyncSession = Depends(get_db),
-    current_user: dict[str, Any] = Depends(get_current_user_stub),
+    current_user: AuthSession = Depends(require_auth),
 ):
     """List all documents to populate frontend management table."""
     stmt = select(Document).order_by(desc(Document.uploaded_at))
@@ -209,7 +195,7 @@ async def list_documents(
 async def delete_document(
     document_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: dict[str, Any] = Depends(get_current_user_stub),
+    current_user: AuthSession = Depends(require_auth),
 ):
     """Delete document from relational DB and clean up its physical file on disk."""
     stmt = select(Document).where(Document.id == document_id)

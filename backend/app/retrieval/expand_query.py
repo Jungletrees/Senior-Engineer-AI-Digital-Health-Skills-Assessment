@@ -9,7 +9,9 @@ import httpx
 from pydantic import ValidationError
 
 from app.agents.tracing import traced
+from app.chainlit_steps import chainlit_step
 from app.retrieval.models import QueryExpansionResult
+from app.security.guardrails import sanitize_tool_result
 from app.settings import settings
 
 
@@ -59,6 +61,7 @@ class AnthropicExpansionClient:
         return str(first)
 
 
+@chainlit_step("expand_query", "tool")
 @traced(agent_name="retrieval_agent")
 async def expand_query(
     query: str,
@@ -87,7 +90,7 @@ def parse_expansion_response(raw: str, original_query: str) -> QueryExpansionRes
         return _fallback(original_query)
     return QueryExpansionResult(
         subqueries=cleaned[:3],
-        reason=parsed.reason,
+        reason=sanitize_tool_result(parsed.reason),
         fallback_used=False,
     )
 

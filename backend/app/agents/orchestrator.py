@@ -9,6 +9,7 @@ from uuid import UUID
 from app.agents.retrieval_agent import RetrievalAgent
 from app.retrieval.compaction import compact_chunk
 from app.retrieval.models import PageImageResult, RetrievalAgentResult, RetrievalCandidate
+from app.security.guardrails import sanitize_tool_result
 from app.settings import settings
 
 STABLE_SYSTEM_PREFIX = (
@@ -22,19 +23,13 @@ class RetrievalUnavailableError(RuntimeError):
 
 
 @dataclass(slots=True)
-class OutputFilterResult:
-    status: str
-    reason: str | None = None
-
-
-@dataclass(slots=True)
 class GenerationPayload:
     model: str
     system: list[dict[str, Any]]
     messages: list[dict[str, Any]]
     source_chunk_ids: list[UUID]
+    source_chunks: list[RetrievalCandidate]
     retrieval_mode: str
-    output_filter: OutputFilterResult
 
 
 async def consult_retrieval_agent(
@@ -103,14 +98,9 @@ async def assemble_generation_payload(
         system=[system_block],
         messages=[{"role": "user", "content": content}],
         source_chunk_ids=[chunk.chunk_id for chunk in retrieval.chunks],
+        source_chunks=retrieval.chunks,
         retrieval_mode=retrieval.retrieval_mode,
-        output_filter=output_filter_stub(""),
     )
-
-
-def output_filter_stub(answer: str) -> OutputFilterResult:
-    # STUB: real grounding/leak/PII checks land at BC14
-    return OutputFilterResult(status="passed")
 
 
 def model_supports_multimodal(model: str) -> bool:
@@ -121,7 +111,7 @@ def model_supports_multimodal(model: str) -> bool:
 def _context_block(chunk: RetrievalCandidate, text: str) -> str:
     source = _escape_attr(chunk.document_filename)
     page = "" if chunk.page_number is None else str(chunk.page_number)
-    return f'<context source="{source}" page="{page}">{text}</context>'
+    return f'<context source="{source}" page="{page}">{sanitize_tool_result(text)}</context>'
 
 
 def _image_block(image: PageImageResult) -> dict[str, Any]:

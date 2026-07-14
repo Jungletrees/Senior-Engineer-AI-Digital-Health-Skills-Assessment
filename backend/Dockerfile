@@ -19,7 +19,7 @@ RUN useradd -ms /bin/bash -d ${HOME_DIR} container_user \
 
 COPY requirements.txt /requirements.txt
 
-RUN --mount=type=cache,target=/root/.cache/pip pip install --no-cache-dir -r /requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip pip install --default-timeout=180 --retries=10 -r /requirements.txt
 
 COPY . ${HOME_DIR}
 RUN find ${HOME_DIR} -type f -print0 | xargs -0 dos2unix

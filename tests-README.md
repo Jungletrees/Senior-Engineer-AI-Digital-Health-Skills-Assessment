@@ -76,6 +76,32 @@ Docker containers are pre-packaged with all required libraries (`poppler-utils`,
     docker compose -p assessment exec backend pytest app/tests/test_cache.py -vv
     ```
 
+*   **Run BC12 chat verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_chat.py -vv
+    ```
+
+*   **Run BC13 upload config verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_upload_config.py -vv
+    ```
+
+*   **Run BC14 guardrail verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_guardrails.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_chat.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_cache.py -vv
+    ```
+
+*   **Run BC15 auth/rate-limit verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_auth.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_rate_limit.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_migrations.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_documents.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_chat.py -vv
+    ```
+
 ### 2.2 Running Tests Locally (Without Docker)
 If you are developing locally with a Python virtual environment:
 
@@ -102,8 +128,12 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC7 Retrieval Tests:** `backend/app/tests/test_retrieval.py` verifies literal Reciprocal Rank Fusion scoring, pgvector vector retrieval, generated-column full-text lexical retrieval, hybrid ordering, vector-only fallback, deleted-document exclusion, query embedding dimension mismatch, and transaction-local `hnsw.ef_search`.
 - **BC8 Rerank Tests:** `backend/app/tests/test_rerank.py` verifies empty-input behavior, sigmoid-bounded score ordering, `top_n` limiting, hosted-provider strategy selection, and explicit failure when a hosted provider is configured without an adapter. Deterministic tests inject fake rerankers and do not download local cross-encoder weights.
 - **BC9 Retrieval Agent Tests:** `backend/app/tests/test_retrieval_agent.py` verifies high-confidence no-expansion, low-confidence expansion, reranker-score gating instead of raw RRF `top_score`, malformed expansion fallback, merge/dedup best fused score retention, iteration-bound deterministic fallback, no public page-image route, and trace-context propagation. Deterministic tests inject fake `hybrid_search`, `rerank`, `expand_query`, and `fetch_page_image` functions; no hosted LLM or model-weight download occurs.
-- **BC10 Orchestrator Tests:** `backend/app/tests/test_orchestrator.py` verifies lexical-overlap compaction, document-order restoration, zero-overlap fallback, static import-boundary enforcement, multimodal image attachment, text-only degradation, context-block payload assembly, retrieval failure propagation, and the explicit BC14 output-filter stub. Tests inject fake retrieval-agent instances and do not call retrieval internals directly.
+- **BC10/BC14 Orchestrator Tests:** `backend/app/tests/test_orchestrator.py` verifies lexical-overlap compaction, document-order restoration, zero-overlap fallback, static import-boundary enforcement, multimodal image attachment, text-only degradation, context-block payload assembly, retrieval failure propagation, and removal of the BC10 output-filter stub after BC14. Tests inject fake retrieval-agent instances and do not call retrieval internals directly.
 - **BC11 Cache Tests:** `backend/app/tests/test_cache.py` verifies query normalization/hash equivalence, exact-cache retrieval/generation skip behavior, semantic threshold hit/miss behavior, hit-count/last-used updates, exact TTL expiry, semantic LRU eviction, document-deletion invalidation, prompt-cache control toggling, and write-eligibility false skips. Semantic-cache tests inject deterministic embedding clients and never call hosted embedding APIs.
+- **BC12 Chat Tests:** `backend/app/tests/test_chat.py` verifies idempotency duplicate handling, concurrent duplicate suppression, conversation-summary threshold behavior, latest-summary-only context loading, exact/semantic cache hits skipping RetrievalAgent and generation, empty-corpus upload-first behavior, retrieval-unavailable responses, audit finalization, and source chunk persistence. Tests inject fake generation clients, fake RetrievalAgent instances, fake embedding clients, and no-op Chainlit step wrappers.
+- **BC13 Frontend/Upload Config Tests:** `backend/app/tests/test_upload_config.py` verifies the settings-derived upload-limits endpoint. `npm test --prefix frontend -- --runInBand` runs deterministic Node tests for the `/documents` page source, frontend fetch/XHR helpers, upload validation, upload progress, mocked polling transitions, failed status rendering support, optimistic delete, rollback, and auth header inclusion.
+- **BC14 Guardrail Tests:** `backend/app/tests/test_guardrails.py` verifies grounded/fabricated answers, leak canaries, PII provenance, empty-answer filtering, tool-result sanitizer delimiter defense, filtered-response cache blocking, input-validation audit rejection, security headers, and configured CORS. No hosted LLMs, hosted embeddings, hosted auth providers, or reranker downloads are used.
+- **BC15 Auth/Rate-Limit Tests:** `backend/app/tests/test_auth.py` and `backend/app/tests/test_rate_limit.py` verify JWT issuance/verification, document-route auth rejection/acceptance, anonymous-chat flag behavior, per-session limits, per-IP limits via `query_audit_log.client_ip`, `Retry-After`, and rate-limit-before-cache behavior. Rate-limit tests use DB fixtures rather than external counters.
 
 ### 2.4 Current Cycle Verification Log
 
@@ -123,30 +153,47 @@ docker compose -p assessment exec backend pytest
 64 passed, 12 skipped, 4 warnings in 20.89s
 ```
 
+BC12-BC15 implementation verification status:
+
+```text
+python3 -m compileall backend/app
+passed
+
+npm test --prefix frontend -- --runInBand
+1..1
+# tests 1
+# pass 1
+# fail 0
+# duration_ms 1696.303333
+
+docker compose -p assessment up -d --build backend frontend
+failed during backend image build:
+ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE.
+Expected sha256 edd81538446786ec3b73972543e53bb43bcaf0bfc8ef76cb679fcc390ffe136d
+Got        2ba3fbf7a9d0eb89c59f58dac6f4623089aa375ac40569fcbad9af9e2b646235
+```
+
+Backend targeted BC12-BC15 pytest commands remain pending until the backend image build is repaired and rebuilt.
+
 ---
 
-## 3. Frontend Testing (`Jest` & RTL)
+## 3. Frontend Testing (Node Test Runner)
 
-Frontend component tests verify the UI layouts, client-side validation logic, and file management dashboard.
+Frontend deterministic tests verify the `/documents` page source and client-side validation/API helper behavior without a browser or hosted services.
 
-### 3.1 Running Jest Tests
-To run unit and integration tests for React components:
+### 3.1 Running Frontend Tests
+To run deterministic frontend tests:
 
 *   **Using npm commands from the project root:**
     ```sh
-    npm run test --prefix frontend
+    npm test --prefix frontend -- --runInBand
     ```
 
 *   **Running directly from the frontend directory:**
     ```sh
     cd frontend
     npm install
-    npm run test
-    ```
-
-*   **Running Jest in watch mode:**
-    ```sh
-    npm run test:watch --prefix frontend
+    npm test -- --runInBand
     ```
 
 ---

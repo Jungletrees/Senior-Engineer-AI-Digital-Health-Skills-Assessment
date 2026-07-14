@@ -81,7 +81,6 @@ async def write_semantic_cache(
     embedding_client: EmbeddingClient | None = None,
 ) -> None:
     """Write a semantic-cache row if the answer is cache-eligible."""
-    # TODO(BC14): eligible = output_filter_status == "passed"
     if not eligible or not settings.semantic_cache_enabled:
         return
     embedding = await embed_cache_query(query, embedding_client)

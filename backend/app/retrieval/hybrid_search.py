@@ -9,6 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.tracing import traced
+from app.chainlit_steps import chainlit_step
 from app.documents.chunking import (
     EmbeddingClient,
     get_embedding_client,
@@ -16,6 +17,7 @@ from app.documents.chunking import (
     validate_embedding_batch,
 )
 from app.retrieval.models import HybridSearchResult, RetrievalCandidate
+from app.security.guardrails import sanitize_tool_result
 from app.settings import settings
 
 
@@ -130,6 +132,7 @@ def reciprocal_rank_fusion(
     return dict(scores)
 
 
+@chainlit_step("hybrid search", "tool")
 @traced(agent_name="retrieval_agent")
 async def hybrid_search(
     db: AsyncSession,
@@ -219,7 +222,7 @@ def _candidate_from_row(row: object, **overrides: object) -> RetrievalCandidate:
         document_filename=str(mapping["document_filename"]),
         document_status=str(mapping["document_status"]),
         document_metadata=dict(mapping["document_metadata"] or {}),
-        content=str(mapping["content"]),
+        content=sanitize_tool_result(str(mapping["content"])),
         page_number=mapping["page_number"],
         section_path=mapping["section_path"],
         vector_rank=overrides.get("vector_rank"),  # type: ignore[arg-type]

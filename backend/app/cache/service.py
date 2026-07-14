@@ -17,6 +17,7 @@ from app.documents.chunking import EmbeddingClient
 class GeneratedAnswer:
     answer: str
     source_doc_ids: list[UUID]
+    output_filter_status: str = "passed"
 
 
 @dataclass(slots=True)
@@ -46,8 +47,7 @@ async def answer_with_cache(
         return _from_hit(semantic_hit)
 
     generated = await full_pipeline()
-    # TODO(BC14): eligible = output_filter_status == "passed"
-    eligible = True
+    eligible = generated.output_filter_status == "passed"
     await write_exact_cache(db, query, generated.answer, generated.source_doc_ids, eligible=eligible)
     await write_semantic_cache(
         db,

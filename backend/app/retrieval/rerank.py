@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from typing import Protocol
 
 from app.agents.tracing import traced
+from app.chainlit_steps import chainlit_step
 from app.retrieval.models import RerankResult, RetrievalCandidate
 from app.settings import settings
 
@@ -24,6 +25,7 @@ HostedRerankFn = Callable[[str, list[RetrievalCandidate], int], RerankResult]
 _LOCAL_RERANKER: Reranker | None = None
 
 
+@chainlit_step("rerank", "tool")
 @traced(agent_name="retrieval_agent")
 async def rerank(
     query: str,

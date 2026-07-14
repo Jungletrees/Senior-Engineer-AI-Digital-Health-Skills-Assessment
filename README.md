@@ -22,11 +22,14 @@ This repository contains the starter code for your submission. Please read every
    | Service | URL |
    |---|---|
    | Frontend / **Instructions** | [http://localhost:3000](http://localhost:3000) |
+   | Frontend / **Documents** | [http://localhost:3000/documents](http://localhost:3000/documents) |
    | Chainlit (Chat UI) | [http://localhost:8000](http://localhost:8000) |
    | Backend (API) | [http://localhost:6100](http://localhost:6100) |
    | Database (PostgreSQL) | `localhost:5432` |
 
    Open [http://localhost:3000](http://localhost:3000) in your browser to read the full assessment requirements.
+
+   Document-management endpoints (`/api/v1/documents*`) require a signed JWT session token after BC15. Issue one with `POST /api/v1/auth/session` and send it as `Authorization: Bearer <token>`. The chat endpoint remains open to anonymous clients when `ANONYMOUS_CHAT_ALLOWED=true`; set it to `false` to require the same JWT for `/api/v1/chat`.
 
 3. **Stop all services:**
 

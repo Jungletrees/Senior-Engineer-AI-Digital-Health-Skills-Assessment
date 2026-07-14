@@ -63,9 +63,27 @@ def test_alembic_upgrade_head_and_downgrade_base_cleanly() -> None:
             )
         ).scalar_one()
 
-    assert current_revision == "0011_anomaly"
+    client_ip_exists = False
+    with migration_engine().connect() as connection:
+        client_ip_exists = connection.execute(
+            text(
+                """
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name = 'query_audit_log'
+                      AND column_name = 'client_ip'
+                      AND udt_name = 'inet'
+                )
+                """
+            )
+        ).scalar_one()
+
+    assert current_revision == "0012_client_ip"
     assert table_count == 11
     assert view_exists is True
+    assert client_ip_exists is True
 
     command.downgrade(config, "base")
     with migration_engine().connect() as connection:

@@ -136,5 +136,63 @@
     ],
     "test_results_summary": "BC9 targeted run passed: 8 passed in 8.35s. BC10 targeted run passed: 9 passed in 0.82s. BC11 targeted run passed: 9 passed in 7.74s. Full backend run passed: 64 passed, 12 skipped, 4 warnings in 20.89s.",
     "coverage_results": "Retrieval Agent confidence gate, expansion fallback, trace propagation, Orchestrator compaction/import boundary/payload assembly, and cache hit/miss/eviction/invalidation/prompt-cache behaviors covered."
+  },
+  {
+    "from_agent": "orchestrator",
+    "to_agent": "backend-frontend-ml-agents",
+    "cycle_id": "BC12-BC15",
+    "status": "planned",
+    "files_modified": [
+      "plan.md",
+      ".codex/handover.json"
+    ],
+    "implementation_summary": "Ingested agents.md, backend/ML/test/GitPR skill specs, current plan.md/tests-README.md, ARCHITECTURE (4).md, and BC11-BC15 build plan. Initialized the combined BC12-BC15 cycle on branch codex/bc12-bc15-chat-documents-guardrails-auth.",
+    "divergences_logged": "None at planning time. Required decisions for idempotency polling, summary trigger, upload-limit config endpoint, output-filter strategy, sanitizer, client_ip, and rate-limit counter storage are already specified in the build plan and will be folded into ARCHITECTURE (4).md section 18 during implementation/docs closure.",
+    "verification_requirements": "Implement BC12-BC15 with deterministic backend/frontend tests and run targeted plus full verification before final docs/commit closure."
+  },
+  {
+    "from_agent": "backend-frontend-ml-agents",
+    "to_agent": "test-engineer",
+    "cycle_id": "BC12-BC15",
+    "status": "implemented_pending_verification",
+    "files_modified": [
+      "backend/app/api/v1/chat.py",
+      "backend/app/api/v1/auth.py",
+      "backend/app/api/v1/config.py",
+      "backend/app/chat/conversation.py",
+      "backend/app/generation/client.py",
+      "backend/app/security/auth.py",
+      "backend/app/security/guardrails.py",
+      "backend/app/security/rate_limit.py",
+      "backend/app/chainlit_steps.py",
+      "backend/app/main.py",
+      "backend/app/models.py",
+      "backend/alembic/versions/0012_query_audit_client_ip.py",
+      "backend/app/documents/routes.py",
+      "backend/app/retrieval/hybrid_search.py",
+      "backend/app/retrieval/rerank.py",
+      "backend/app/retrieval/expand_query.py",
+      "backend/app/retrieval/fetch_page_image.py",
+      "frontend/src/app/documents/page.tsx",
+      "frontend/src/lib/documentsCore.js",
+      "frontend/tests/documentsCore.test.mjs",
+      "frontend/tests/run-tests.mjs"
+    ],
+    "implementation_summary": "Implemented BC12 chat idempotency/cache-before-retrieval/session persistence/generation boundary, BC13 upload-limits config and documents UI, BC14 input/output guardrails and sanitizer/cache eligibility, and BC15 JWT auth plus per-session/per-IP rate limiting.",
+    "divergences_logged": "ARCHITECTURE (4).md section 18 now records BC12-BC15 decisions. No intentional divergence from the requested architecture is known.",
+    "verification_requirements": "Wait for rebuilt Docker images, run BC12-BC15 targeted backend tests, frontend deterministic tests, then full backend/frontend verification before marking complete."
+  },
+  {
+    "from_agent": "test-engineer",
+    "to_agent": "gitpr-agent",
+    "cycle_id": "BC12-BC15",
+    "status": "verification_blocked_by_backend_image_build",
+    "test_commands_executed": [
+      "python3 -m compileall backend/app",
+      "npm test --prefix frontend -- --runInBand",
+      "docker compose -p assessment up -d --build backend frontend"
+    ],
+    "test_results_summary": "Backend compile passed. Frontend deterministic tests passed: 1 test passed, 0 failed. Backend Docker image rebuild failed during pip install with package hash mismatch: expected sha256 edd81538446786ec3b73972543e53bb43bcaf0bfc8ef76cb679fcc390ffe136d, got 2ba3fbf7a9d0eb89c59f58dac6f4623089aa375ac40569fcbad9af9e2b646235.",
+    "coverage_results": "BC12-BC15 backend targeted pytest commands remain pending until the image build is repaired and rebuilt."
   }
 ]

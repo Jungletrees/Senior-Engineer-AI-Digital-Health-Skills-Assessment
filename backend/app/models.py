@@ -25,7 +25,7 @@ from sqlalchemy import (
     func,
     text,
 )
-from sqlalchemy.dialects.postgresql import JSONB, UUID as PGUUID
+from sqlalchemy.dialects.postgresql import INET, JSONB, UUID as PGUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy.types import UserDefinedType
 
@@ -212,6 +212,7 @@ class QueryAuditLog(Base):
     retrieval_mode: Mapped[str | None] = mapped_column(Text)
     generation_model: Mapped[str | None] = mapped_column(Text)
     grounded: Mapped[bool | None] = mapped_column(Boolean)
+    client_ip: Mapped[str | None] = mapped_column(INET)
     input_validation_status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'passed'"))
     output_filter_status: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'passed'"))
     output_filter_reason: Mapped[str | None] = mapped_column(Text)

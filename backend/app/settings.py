@@ -31,6 +31,30 @@ class Settings(BaseSettings):
     cache_eviction_cron: str = "0 * * * *"
     enable_scheduled_jobs: bool = True
     semantic_cache_max_rows: int = 5000
+    conversation_window_turns: int = 6
+    conversation_summary_trigger_tokens: int = 2000
+    max_output_tokens_chat: int = 500
+    max_output_tokens_summary: int = 200
+    anonymous_chat_allowed: bool = True
+    chainlit_auth_secret: str | None = None
+    max_pdf_size_mb: int = 20
+    max_pdf_pages: int = 300
+    allowed_mime_types: str = "application/pdf"
+    request_body_size_limit_bytes: int = 25 * 1024 * 1024
+    cors_allowed_origins: str = "http://localhost:3000,http://localhost:8000"
+    jwt_secret: str = "dev-only-change-me"
+    session_token_expiry_minutes: int = 60
+    rate_limit_per_session_per_hour: int = 30
+    rate_limit_window_seconds: int = 3600
+    rate_limit_per_ip_per_hour: int = 100
+
+    @property
+    def allowed_mime_type_list(self) -> list[str]:
+        return [item.strip() for item in self.allowed_mime_types.split(",") if item.strip()]
+
+    @property
+    def cors_allowed_origin_list(self) -> list[str]:
+        return [item.strip() for item in self.cors_allowed_origins.split(",") if item.strip()]
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
