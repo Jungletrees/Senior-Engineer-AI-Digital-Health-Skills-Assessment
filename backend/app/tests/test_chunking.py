@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.database import DATABASE_URL
 from app.documents.chunking import (
+    get_embedding_model,
     DeterministicEmbeddingClient,
     StructuredBlock,
     chunk_structured_blocks,
@@ -139,6 +140,22 @@ async def test_chunk_embedding_persistence_populates_vector_and_tsv(
     ]
     monkeypatch.setattr("app.documents.chunking.extract_structured_blocks_from_pdf", lambda _path: blocks)
 
+    # This test is about PERSISTENCE of a structure-aware chunk (vector, tsv, section path),
+    # not about which strategy the selector picks. Pin the strategy so it cannot break when
+    # the selector's thresholds are tuned; the selector has its own suite in
+    # test_chunk_strategy.py, and the fixed-size persistence path is covered there too.
+    from app.documents.chunk_strategy import ChunkPlan, ChunkStrategy, StructureProfile
+
+    monkeypatch.setattr(
+        "app.documents.chunk_strategy.select_strategy",
+        lambda profile, default_overlap: ChunkPlan(
+            strategy=ChunkStrategy.STRUCTURE_AWARE,
+            overlap_ratio=default_overlap,
+            reason="pinned by test",
+            profile=profile,
+        ),
+    )
+
     try:
         summary = await prepare_and_persist_document_chunks(
             migrated_session,
@@ -151,7 +168,9 @@ async def test_chunk_embedding_persistence_populates_vector_and_tsv(
         chunk = (
             await migrated_session.execute(select(Chunk).where(Chunk.document_id == document.id))
         ).scalar_one()
-        assert chunk.embedding_model == "text-embedding-3-small"
+        # Not a hardcoded provider: the chunk must be labelled with whatever model actually
+        # embedded it, or the semantic cache would compare vectors across embedding spaces.
+        assert chunk.embedding_model == get_embedding_model()
         assert chunk.section_path == "DOSAGE SECTION"
 
         row = (

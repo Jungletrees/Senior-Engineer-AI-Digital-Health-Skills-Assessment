@@ -112,3 +112,28 @@ def test_a_table_survives_flattening_because_it_is_still_a_table() -> None:
     flattened = flatten_for_fixed_size(blocks)
 
     assert flattened[0].block_type == "table"
+
+
+def test_fixed_size_chunks_stay_inside_the_token_budget_with_overlap() -> None:
+    """The overlap is the whole point of the fixed-size path.
+
+    With no structure to cut on, a fact severed at a chunk boundary is simply lost to
+    retrieval. Overlap is what gives it a second chance to survive intact in a neighbour.
+    """
+    long_prose = " ".join(f"word{i}" for i in range(2000))
+    blocks = flatten_for_fixed_size(
+        [StructuredBlock(content=long_prose, page_number=1, block_type="paragraph")]
+    )
+
+    chunks = chunk_structured_blocks(
+        blocks, chunk_size_tokens=100, overlap_ratio=FIXED_OVERLAP_RATIO
+    )
+
+    assert len(chunks) > 1
+    for chunk in chunks:
+        assert len(chunk.content.split()) <= 100
+
+    # Consecutive chunks must share tokens, or there is no overlap at all.
+    first = chunks[0].content.split()
+    second = chunks[1].content.split()
+    assert set(first) & set(second), "fixed-size chunks must overlap"

@@ -326,7 +326,22 @@ async def test_query_audit_finalized_and_source_chunks_persist(migrated_session:
     assert audit["latency_ms"] is not None
     assert audit["token_input"] == 10
     assert audit["token_output"] == 6
-    assert str(audit["cost_usd"]) == "0.000120"
+    # Do not hardcode a cost: the router chooses the model, so a literal here silently
+    # becomes wrong the moment the cheapest configured provider changes. Assert the
+    # BEHAVIOR instead — that the cost was derived from the model that actually ran.
+    from app.core.cost import compute_cost
+
+    from decimal import ROUND_HALF_UP, Decimal
+
+    expected_cost = compute_cost(
+        audit["generation_model"], audit["token_input"], audit["token_output"]
+    )
+    # `cost_usd` is NUMERIC with 6 decimal places, so the stored value is the computed cost
+    # rounded to the column's scale. Compare at that scale rather than against the raw
+    # float, or a cheap model's per-request cost fails the assertion purely on precision.
+    quantized = Decimal(expected_cost).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+    assert audit["cost_usd"] == quantized
+    assert audit["cost_usd"] >= 0
     assert assistant["source_chunk_ids"] == [candidate.chunk_id]
 
 

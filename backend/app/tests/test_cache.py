@@ -18,6 +18,7 @@ from app.cache.hygiene import cache_hygiene_job
 from app.cache.semantic import lookup_semantic_cache, write_semantic_cache
 from app.cache.service import GeneratedAnswer, answer_with_cache
 from app.database import DATABASE_URL
+from app.documents.chunking import get_embedding_model
 from app.retrieval.models import RetrievalAgentResult, RetrievalCandidate
 from app.settings import settings
 
@@ -266,6 +267,7 @@ async def _insert_semantic_cache(
                 """
                 INSERT INTO semantic_cache (
                     query_embedding,
+                    embedding_model,
                     representative_query,
                     answer,
                     source_doc_ids,
@@ -273,6 +275,7 @@ async def _insert_semantic_cache(
                 )
                 VALUES (
                     CAST(:embedding AS vector),
+                    :embedding_model,
                     :representative_query,
                     :answer,
                     :source_doc_ids,
@@ -283,6 +286,9 @@ async def _insert_semantic_cache(
             ),
             {
                 "embedding": _vector_literal(embedding),
+                # Explicit, never defaulted: a row whose embedding_model is wrong makes the
+                # cache compare vectors across embedding spaces, which is meaningless.
+                "embedding_model": get_embedding_model(),
                 "representative_query": representative_query,
                 "answer": answer,
                 "source_doc_ids": source_doc_ids,
@@ -324,3 +330,98 @@ class _Agent:
                 )
             ]
         )
+
+
+@pytest.mark.asyncio
+async def test_semantic_cache_round_trips_under_any_embedding_model(
+    migrated_session: AsyncSession,
+) -> None:
+    """Write and lookup must agree on the model, whatever the configured provider is.
+
+    The old test helper omitted `embedding_model` and relied on the column DEFAULT
+    (`text-embedding-3-small`). That passed on an OpenAI deployment and silently returned
+    nothing on any other one — which is exactly the class of bug the column exists to
+    prevent, hiding inside the mechanism meant to prevent it. Migration 0016 drops that
+    default so an omitted model is now a loud NOT NULL violation.
+    """
+    document_id = await _insert_document(migrated_session, content_hash="1" * 64)
+    embedder = StaticEmbeddingClient(_basis_vector(0))
+
+    await write_semantic_cache(
+        migrated_session,
+        "what is the child dose",
+        "cached answer",
+        [document_id],
+        eligible=True,
+        embedding_client=embedder,
+    )
+    await migrated_session.commit()
+
+    hit = await lookup_semantic_cache(
+        migrated_session, "what is the child dose", embedding_client=embedder
+    )
+
+    assert hit is not None, "a row written by write_semantic_cache must be found by lookup"
+    assert hit.answer == "cached answer"
+
+    stored = (
+        await migrated_session.execute(text("SELECT embedding_model FROM semantic_cache"))
+    ).scalars().one()
+    assert stored == get_embedding_model()
+
+
+@pytest.mark.asyncio
+async def test_a_vector_from_another_embedding_model_is_never_a_hit(
+    migrated_session: AsyncSession,
+) -> None:
+    """Cosine distance between two different embedding spaces is a meaningless number.
+
+    Serving it as a cache hit returns a stale answer to an unrelated question, so a row
+    labelled with a different model must never be considered — even at similarity 1.0.
+    """
+    document_id = await _insert_document(migrated_session, content_hash="2" * 64)
+    await migrated_session.execute(
+        text(
+            """
+            INSERT INTO semantic_cache (
+                query_embedding, embedding_model, representative_query, answer, source_doc_ids
+            )
+            VALUES (
+                CAST(:embedding AS vector), 'some-other-provider-model',
+                'q', 'answer from another model', :docs
+            )
+            """
+        ),
+        {"embedding": _vector_literal(_basis_vector(0)), "docs": [document_id]},
+    )
+    await migrated_session.commit()
+
+    hit = await lookup_semantic_cache(
+        migrated_session, "q", embedding_client=StaticEmbeddingClient(_basis_vector(0))
+    )
+
+    assert hit is None, "an identical vector from a different model must not be a hit"
+
+
+@pytest.mark.asyncio
+async def test_omitting_the_embedding_model_now_fails_loudly(
+    migrated_session: AsyncSession,
+) -> None:
+    """Migration 0016 removed the default, so the mistake is impossible to ship silently."""
+    from sqlalchemy.exc import IntegrityError
+
+    document_id = await _insert_document(migrated_session, content_hash="3" * 64)
+
+    with pytest.raises(IntegrityError):
+        await migrated_session.execute(
+            text(
+                """
+                INSERT INTO semantic_cache (
+                    query_embedding, representative_query, answer, source_doc_ids
+                )
+                VALUES (CAST(:embedding AS vector), 'q', 'a', :docs)
+                """
+            ),
+            {"embedding": _vector_literal(_basis_vector(0)), "docs": [document_id]},
+        )
+    await migrated_session.rollback()

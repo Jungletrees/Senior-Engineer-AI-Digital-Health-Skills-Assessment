@@ -202,13 +202,16 @@ async def test_process_document_fallback_preserves_prior_pages_and_logs_metadata
         assert fallback["pages_affected"] == [2, 3]
         assert updated.metadata_["structure_detection"]["table_pages"] == [2]
 
+        # Tool calls only. The trace now also carries `decision` rows (which chunking
+        # strategy was chosen, and why), so counting every row would conflate "how many
+        # tools ran" with "how many things were recorded".
         trace_rows = (
             await migrated_session.execute(
                 text(
                     """
                     SELECT tool_name, error
                     FROM agent_trace_log
-                    WHERE document_id = :document_id
+                    WHERE document_id = :document_id AND event_type = 'tool_call'
                     ORDER BY created_at
                     """
                 ),
@@ -218,6 +221,25 @@ async def test_process_document_fallback_preserves_prior_pages_and_logs_metadata
         assert len(trace_rows) == 2
         assert trace_rows[0]["error"] is None
         assert "synthetic page 2 failure" in trace_rows[1]["error"]
+
+        # The chunking decision is itself auditable: an answer's quality can be traced back
+        # to how its source document was split.
+        decision = (
+            await migrated_session.execute(
+                text(
+                    """
+                    SELECT agent_id, tool_name, output
+                    FROM agent_trace_log
+                    WHERE document_id = :document_id AND event_type = 'decision'
+                    """
+                ),
+                {"document_id": document_id},
+            )
+        ).mappings().one()
+        assert decision["agent_id"] == "ingestion_agent"
+        assert decision["tool_name"] == "chunk_strategy_selected"
+        assert decision["output"]["chunk_strategy"] in ("structure_aware", "fixed_size")
+        assert decision["output"]["chunk_strategy_reason"]
         assert all(tools == list(INGESTION_TOOL_NAMES) for tools in client.tools_seen)
     finally:
         _cleanup_pdf(pdf_path)
