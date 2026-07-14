@@ -1,7 +1,7 @@
 # Development Build Plan (plan.md)
 
-## Current Status: [x] BC16-BC28 Corrective Implementation Verified; Checklist Documentation Pass Completed Locally
-**Active Build Cycle:** BC16-BC28 - Final Tests, Deployment Hardening, Scheduled Grading, and Gold-Standard Correctives
+## Current Status: [ ] Production Gap Closure In Progress
+**Active Build Cycle:** Production Gap Closure - Chainlit, Citations, Upload Enqueue, Playwright, Reviewer Docs
 
 ---
 
@@ -113,7 +113,7 @@ Implement exact-cache lookup/write, semantic-cache lookup/write, prompt-cache co
 
 ## Active Cycle: BC16-BC28
 
-**Status:** [x] Corrective implementation and deterministic verification completed; documentation/checklist fold-back completed locally in this buildrun. Playwright remains unscaffolded in the current frontend package, Chainlit is not yet wired to `/api/v1/chat`, UI-level Chicago superscript citations are incomplete, upload-to-worker enqueueing is not wired in the route, and gold manual/CI runs require corpus fetch/checksum pinning plus human expected-answer verification before scores are meaningful.
+**Status:** [x] Corrective implementation and deterministic verification completed; superseded by the Production Gap Closure cycle for Chainlit wiring, upload enqueueing, citation rendering, and Playwright scaffold. Gold manual/CI runs still require corpus fetch/checksum pinning plus human expected-answer verification before scores are meaningful.
 
 ### Objective
 Complete the BC16-BC20 final test/deployment/docs/scheduler scope and BC21-BC28 corrective scope without restarting from scratch. This includes deterministic/gold-set test consolidation, frontend/Playwright coverage, deploy hardening, singleton scheduled jobs, cost/rate-limit/cache correctness, numeric-aware grounding, reproducible `JudgeAgent` grading, fixed gold-standard corpus evaluation, deviation alerts, and documentation fold-back.
@@ -185,3 +185,47 @@ Complete the BC16-BC20 final test/deployment/docs/scheduler scope and BC21-BC28 
 - [x] Updated `docker-compose.yaml` with allow-listed environment injection, database dependency ordering, and basic DB/backend health checks.
 - [ ] Clean-clone dry run not performed in this buildrun.
 - [ ] No tag, archive, or repository access-control changes performed in this buildrun.
+
+---
+
+## Active Cycle: Production Gap Closure
+
+**Status:** [x] Targeted implementation and verification complete; Playwright browser run, clean-clone run, and real gold scoring remain pending.
+
+### Objective
+Close the explicit production gaps left after BC16-BC28: wire Chainlit to `/api/v1/chat`, return/render structured citation metadata, visibly enqueue ingestion from the upload route, scaffold Playwright e2e, keep real gold scores trust-gated, and keep the reviewer-facing docs honest about complete versus partial work.
+
+### Completed Work
+- [x] Upload route schedules `process_document` through a FastAPI background task after a successful new upload commit.
+- [x] Duplicate indexed/processing uploads still short-circuit without scheduling duplicate ingestion.
+- [x] `/api/v1/chat` returns structured citation metadata assembled from retrieved chunk metadata.
+- [x] Chainlit calls `/api/v1/chat`, preserves backend session IDs, and renders answer-level superscript citation notes.
+- [x] Next.js root page is a native updated reviewer console instead of a stale backend HTML proxy.
+- [x] Next.js root chat and `/documents` calls are public local reviewer flows with no browser token or bearer header dependency.
+- [x] Backend document upload/list/status/delete routes are public for local reviewer use; invalid/missing bearer headers do not produce 401s.
+- [x] Playwright dependency/config/spec added for upload-to-indexed-to-Chainlit cited-answer smoke.
+- [x] `.env.example`, compose, README, frontend README, local setup, tests guide, and checklist status updated for the new runtime wiring.
+
+### Verification Status
+- [x] `python3 -m compileall backend/app chainlit_app`
+  - Result: passed locally.
+- [x] `npm test --prefix frontend -- --runInBand`
+  - Result: `1 passed` after removing document-route auth bootstrap.
+- [x] `docker compose -p assessment up -d --build backend frontend`
+  - Result: rebuilt and restarted backend/frontend successfully.
+- [x] `docker compose -p assessment exec backend pytest app/tests/test_auth.py app/tests/test_documents.py -vv`
+  - Result: `9 passed, 4 warnings in 6.62s` against the rebuilt backend image.
+- [x] `curl -s -i http://localhost:6100/api/v1/documents`
+  - Result: `200 OK` with `[]` and no token.
+- [x] `curl -s -i -H 'Authorization: Bearer nope' http://localhost:6100/api/v1/documents`
+  - Result: `200 OK` with `[]`, proving document routes ignore stale/invalid bearer headers.
+- [x] `curl -s -i -X POST http://localhost:6100/api/v1/documents`
+  - Result: `422 Unprocessable Entity` for missing file rather than `401 Unauthorized`, proving upload is no longer auth-gated.
+- [x] `docker compose -p assessment exec backend alembic upgrade head`
+  - Result: restored live stack schema after targeted tests that downgrade the shared test database.
+- [x] Chainlit client test
+  - Result: `python3 -m unittest chainlit_app.tests.test_chat -v` passed earlier in this production-gap pass.
+- [ ] Playwright live smoke after rebuilt services and browser binary installation.
+- [ ] Full backend/frontend verification after targeted fixes.
+- [ ] Clean-clone dry run.
+- [ ] Real gold manual/CI score runs remain untrusted until corpus fetch/checksum pinning, indexing, and human expected-answer verification are complete.

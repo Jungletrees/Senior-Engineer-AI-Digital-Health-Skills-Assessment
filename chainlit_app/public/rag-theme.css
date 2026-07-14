@@ -1,0 +1,58 @@
+:root {
+  --primary: #1f6f5b;
+  --primary-foreground: #ffffff;
+  --background: #eef2f5;
+  --foreground: #18212f;
+  --card: #ffffff;
+  --border: #d4dce5;
+  --muted: #536173;
+}
+
+body {
+  background: #eef2f5 !important;
+  color: #18212f !important;
+  font-family: Arial, Helvetica, sans-serif !important;
+}
+
+a {
+  color: #1f6f5b !important;
+}
+
+textarea,
+input {
+  border-radius: 6px !important;
+}
+
+button {
+  border-radius: 6px !important;
+}
+
+[data-testid="chat-input"],
+[data-testid="message-composer"] {
+  border: 1px solid #cbd7e3 !important;
+  background: #ffffff !important;
+}
+
+[data-testid="user-message"],
+[data-testid="assistant-message"] {
+  border-radius: 8px !important;
+}
+
+[data-testid="assistant-message"] {
+  border: 1px solid #d8dee8 !important;
+  background: #ffffff !important;
+}
+
+[data-testid="user-message"] {
+  border: 1px solid #bdd8cf !important;
+  background: #f1faf6 !important;
+}
+
+.markdown-body sup {
+  color: #a3132a;
+  font-weight: 700;
+}
+
+.markdown-body ol {
+  color: #536173;
+}

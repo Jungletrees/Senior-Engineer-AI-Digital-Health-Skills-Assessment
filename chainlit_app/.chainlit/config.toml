@@ -1,0 +1,42 @@
+[project]
+enable_telemetry = false
+user_env = []
+session_timeout = 3600
+user_session_timeout = 1296000
+cache = false
+allow_origins = ["*"]
+
+[features]
+unsafe_allow_html = false
+latex = false
+user_message_autoscroll = true
+auto_tag_thread = true
+edit_message = true
+
+[features.spontaneous_file_upload]
+enabled = false
+accept = ["application/pdf"]
+max_files = 1
+max_size_mb = 20
+
+[features.audio]
+sample_rate = 24000
+
+[features.mcp.sse]
+enabled = false
+
+[features.mcp.stdio]
+enabled = false
+allowed_executables = ["npx", "uvx"]
+
+[UI]
+name = "Last Mile Health RAG Chat"
+default_theme = "light"
+layout = "wide"
+default_sidebar_state = "open"
+description = "Document-grounded chat over indexed clinical PDFs."
+cot = "hidden"
+custom_css = "/public/rag-theme.css"
+
+[meta]
+generated_by = "2.5.5"

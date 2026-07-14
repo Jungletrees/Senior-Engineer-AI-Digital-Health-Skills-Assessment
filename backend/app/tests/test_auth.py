@@ -19,7 +19,7 @@ from app.api.v1.chat import router as chat_router
 from app.core.errors import AppError, app_error_handler
 from app.database import DATABASE_URL, get_db
 from app.documents.routes import router as documents_router
-from app.security.auth import _encode_jwt, issue_session_token, verify_session_token
+from app.security.auth import _encode_jwt, verify_session_token
 from app.settings import settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -56,36 +56,20 @@ async def test_auth_session_endpoint_returns_valid_jwt() -> None:
 
 
 @pytest.mark.asyncio
-async def test_document_routes_reject_missing_malformed_and_expired_tokens(migrated_session: AsyncSession) -> None:
+async def test_document_routes_are_public_for_local_reviewer_use(migrated_session: AsyncSession) -> None:
     app = _documents_app(migrated_session)
+    document_id = await _insert_document(migrated_session)
     expired = _expired_token()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        missing = await client.get("/api/v1/documents")
-        missing_upload = await client.post(
-            "/api/v1/documents",
-            files={"file": ("x.pdf", b"%PDF-1.4\n", "application/pdf")},
-        )
-        malformed = await client.get("/api/v1/documents", headers={"Authorization": "Bearer nope"})
-        expired_response = await client.get("/api/v1/documents", headers={"Authorization": f"Bearer {expired}"})
-
-    assert missing.status_code == 401
-    assert missing_upload.status_code == 401
-    assert malformed.status_code == 401
-    assert expired_response.status_code == 401
-    assert missing.json()["error"]["code"] == "UNAUTHORIZED"
-
-
-@pytest.mark.asyncio
-async def test_document_routes_accept_valid_token(migrated_session: AsyncSession) -> None:
-    app = _documents_app(migrated_session)
-    token = issue_session_token()
-    document_id = await _insert_document(migrated_session)
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        listed = await client.get("/api/v1/documents", headers={"Authorization": f"Bearer {token}"})
-        fetched = await client.get(f"/api/v1/documents/{document_id}", headers={"Authorization": f"Bearer {token}"})
-        deleted = await client.delete(f"/api/v1/documents/{document_id}", headers={"Authorization": f"Bearer {token}"})
+        listed = await client.get("/api/v1/documents")
+        malformed_header = await client.get("/api/v1/documents", headers={"Authorization": "Bearer nope"})
+        expired_header = await client.get("/api/v1/documents", headers={"Authorization": f"Bearer {expired}"})
+        fetched = await client.get(f"/api/v1/documents/{document_id}")
+        deleted = await client.delete(f"/api/v1/documents/{document_id}")
 
     assert listed.status_code == 200
+    assert malformed_header.status_code == 200
+    assert expired_header.status_code == 200
     assert fetched.status_code == 200
     assert deleted.status_code == 200
 

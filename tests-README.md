@@ -1,6 +1,6 @@
 # Test Execution & Verification Guide (tests-README FILE)
 
-This document is the canonical reference for executing automated tests on the **Last Mile Health RAG** system. It details the setup, tools, and execution procedures for the backend FastAPI suite, the current Next.js deterministic test suite, and the planned Playwright e2e suite.
+This document is the canonical reference for executing automated tests on the **Last Mile Health RAG** system. It details the setup, tools, and execution procedures for the backend FastAPI suite, the Next.js deterministic test suite, Chainlit client tests, and the Playwright e2e smoke suite.
 
 ---
 
@@ -9,8 +9,8 @@ This document is the canonical reference for executing automated tests on the **
 Automated tests are divided into three isolated, progressive layers:
 
 1. **Backend Deterministic Suite (`pytest`):** Validates routes, schemas, database models, computed columns, Alembic migrations, rate limits, and caching systems. Highly optimized, isolated from network requests, and fully mocked.
-2. **Frontend Deterministic Suite (`node --test`):** Validates the Next.js document upload helper layer, upload state machinery, deletions, polling merge behavior, and auth header inclusion without a browser.
-3. **End-to-End (E2E) Integration Suite (`Playwright`, planned):** Intended to simulate browser flows for logging in, uploading a document, waiting for status transitions, loading chat, asking a query, and verifying citations/page images. The current frontend package does not yet include Playwright dependency, config, or specs.
+2. **Frontend Deterministic Suite (`node --test`):** Validates the Next.js document upload helper layer, public document API calls, upload state machinery, deletions, and polling merge behavior without a browser.
+3. **End-to-End (E2E) Integration Suite (`Playwright`):** Simulates public browser flows for uploading a generated table-bearing PDF, waiting for indexing, loading Chainlit, asking a table-dependent question, and verifying both the expected table-derived value and cited page note.
 
 ## Current Reviewer Test Status
 
@@ -18,8 +18,9 @@ Automated tests are divided into three isolated, progressive layers:
 |---|---|---|
 | Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> `120 passed, 12 skipped, 4 warnings in 41.03s` in the verified BC16-BC28 run. |
 | Backend targeted corrective suites | Verified complete | Scheduler singleton, cost, rate-limit indexes, semantic-cache model scope, numeric grounding, anomaly detection, judge reproducibility, gold-standard, and `-m golden_set` suites passed in the verified BC16-BC28 run. |
-| Frontend deterministic suite | Verified complete | `npm test --prefix frontend -- --runInBand` passed; latest local run after docs update: `1 passed`. |
-| Playwright e2e | Not complete | No Playwright dependency, config, or spec exists yet. |
+| Frontend deterministic suite | Verified complete | `npm test --prefix frontend -- --runInBand` passed; latest local run after production-gap changes: `1 passed`. |
+| Chainlit client tests | Added | `python3 -m unittest chainlit_app.tests.test_chat -v` covers citation rendering and backend client request construction. |
+| Playwright e2e | Scaffolded | `frontend/e2e/upload-chainlit-citation.spec.ts` covers upload-to-indexed-to-Chainlit citation smoke. Requires rebuilt local services and installed Playwright browser binaries. |
 | Real gold manual/CI score runs | Not trusted yet | Requires corpus fetch, TOFU checksum pinning, indexing, and human expected-answer verification before running score-floor checks. |
 | Clean-clone run | Not complete | Must be run from a fresh clone before claiming reviewer-ready reproducibility. |
 
@@ -146,7 +147,7 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **LLM/API Mocking:** Pytest fixtures intercept and mock Anthropic (`anthropic`), OpenAI (`openai`), and OpenRouter (`openrouter`) endpoints.
 - **Database Isolation:** All tests run inside a PostgreSQL transaction that automatically rolls back when the test terminates, preventing database pollution.
 - **BC2 Migration Tests:** `backend/app/tests/test_migrations.py` runs `alembic upgrade head` and `alembic downgrade base` against the containerized Postgres database. `backend/app/tests/test_schema_constraints.py` rebuilds the migration head for constraint checks, then validates generated `content_tsv`, `documents.content_hash` uniqueness, `page_images` uniqueness, `query_audit_log.idempotency_key` uniqueness, `agentops_summary`, and document cascade deletion behavior.
-- **BC3/BC4 Document Tests:** `backend/app/tests/test_documents.py` verifies upload validation, deduplication, status/list/delete endpoints, the BC4 `detect_page_structure` contract, OCR fallback wiring, and the upload-to-rasterization worker path that persists `page_images` rows. `backend/app/tests/test_rasterization.py` validates the instrumented worker transition from `processing` to `indexed`, including page image persistence and chunking metadata. Poppler and Tesseract calls are mocked in deterministic tests; the Docker image includes the real binaries for manual or integration runs.
+- **BC3/BC4 Document Tests:** `backend/app/tests/test_documents.py` verifies upload validation, deduplication, status/list/delete endpoints, visible background enqueueing of the ingestion worker for new uploads, no duplicate enqueue for indexed duplicates, the BC4 `detect_page_structure` contract, OCR fallback wiring, and the upload-to-rasterization worker path that persists `page_images` rows. `backend/app/tests/test_rasterization.py` validates the instrumented worker transition from `processing` to `indexed`, including page image persistence and chunking metadata. Poppler and Tesseract calls are mocked in deterministic tests; the Docker image includes the real binaries for manual or integration runs.
 - **BC5 Chunking/Embedding Tests:** `backend/app/tests/test_chunking.py` verifies chunk size limits, configured overlap behavior, heading/table-aware splitting, deterministic embedding generation, embedding dimension validation, pgvector persistence, and database-generated `content_tsv`. Hosted OpenAI/Voyage embedding calls are not made in deterministic tests; tests inject a fake embedding client, while local development without provider keys uses the deterministic fallback path.
 - **BC6 Ingestion Agent Tests:** `backend/app/tests/test_ingestion_agent.py` verifies the page-scaled ingestion iteration cap, the static tool scope, agent trace logging, table-page image parity with the deterministic path, per-page fallback metadata, and prompt-injection/tool-scope containment. Hosted Anthropic calls are not made in deterministic tests; tests inject a scripted model client.
 - **BC7 Retrieval Tests:** `backend/app/tests/test_retrieval.py` verifies literal Reciprocal Rank Fusion scoring, pgvector vector retrieval, generated-column full-text lexical retrieval, hybrid ordering, vector-only fallback, deleted-document exclusion, query embedding dimension mismatch, and transaction-local `hnsw.ef_search`.
@@ -154,10 +155,10 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC9 Retrieval Agent Tests:** `backend/app/tests/test_retrieval_agent.py` verifies high-confidence no-expansion, low-confidence expansion, reranker-score gating instead of raw RRF `top_score`, malformed expansion fallback, merge/dedup best fused score retention, iteration-bound deterministic fallback, no public page-image route, and trace-context propagation. Deterministic tests inject fake `hybrid_search`, `rerank`, `expand_query`, and `fetch_page_image` functions; no hosted LLM or model-weight download occurs.
 - **BC10/BC14 Orchestrator Tests:** `backend/app/tests/test_orchestrator.py` verifies lexical-overlap compaction, document-order restoration, zero-overlap fallback, static import-boundary enforcement, multimodal image attachment, text-only degradation, context-block payload assembly, retrieval failure propagation, and removal of the BC10 output-filter stub after BC14. Tests inject fake retrieval-agent instances and do not call retrieval internals directly.
 - **BC11 Cache Tests:** `backend/app/tests/test_cache.py` verifies query normalization/hash equivalence, exact-cache retrieval/generation skip behavior, semantic threshold hit/miss behavior, hit-count/last-used updates, exact TTL expiry, semantic LRU eviction, document-deletion invalidation, prompt-cache control toggling, and write-eligibility false skips. Semantic-cache tests inject deterministic embedding clients and never call hosted embedding APIs.
-- **BC12 Chat Tests:** `backend/app/tests/test_chat.py` verifies idempotency duplicate handling, concurrent duplicate suppression, conversation-summary threshold behavior, latest-summary-only context loading, exact/semantic cache hits skipping RetrievalAgent and generation, empty-corpus upload-first behavior, retrieval-unavailable responses, audit finalization, and source chunk persistence. Tests inject fake generation clients, fake RetrievalAgent instances, fake embedding clients, and no-op Chainlit step wrappers.
-- **BC13 Frontend/Upload Config Tests:** `backend/app/tests/test_upload_config.py` verifies the settings-derived upload-limits endpoint. `npm test --prefix frontend -- --runInBand` runs deterministic Node tests for the `/documents` page source, frontend fetch/XHR helpers, upload validation, upload progress, mocked polling transitions, failed status rendering support, optimistic delete, rollback, and auth header inclusion.
+- **BC12 Chat Tests:** `backend/app/tests/test_chat.py` verifies idempotency duplicate handling, concurrent duplicate suppression, conversation-summary threshold behavior, latest-summary-only context loading, exact/semantic cache hits skipping RetrievalAgent and generation, empty-corpus upload-first behavior, retrieval-unavailable responses, audit finalization, source chunk persistence, and structured citation metadata. Tests inject fake generation clients, fake RetrievalAgent instances, fake embedding clients, and no-op Chainlit step wrappers.
+- **BC13 Frontend/Upload Config Tests:** `backend/app/tests/test_upload_config.py` verifies the settings-derived upload-limits endpoint. `npm test --prefix frontend -- --runInBand` runs deterministic Node tests for the `/documents` page source, frontend fetch/XHR helpers, upload validation, upload progress, mocked polling transitions, failed status rendering support, optimistic delete, rollback, and public/no-auth document calls.
 - **BC14 Guardrail Tests:** `backend/app/tests/test_guardrails.py` verifies grounded/fabricated answers, leak canaries, PII provenance, empty-answer filtering, tool-result sanitizer delimiter defense, filtered-response cache blocking, input-validation audit rejection, security headers, and configured CORS. No hosted LLMs, hosted embeddings, hosted auth providers, or reranker downloads are used.
-- **BC15 Auth/Rate-Limit Tests:** `backend/app/tests/test_auth.py` and `backend/app/tests/test_rate_limit.py` verify JWT issuance/verification, document-route auth rejection/acceptance, anonymous-chat flag behavior, per-session limits, per-IP limits via `query_audit_log.client_ip`, `Retry-After`, and rate-limit-before-cache behavior. Rate-limit tests use DB fixtures rather than external counters.
+- **BC15 Auth/Rate-Limit Tests:** `backend/app/tests/test_auth.py` and `backend/app/tests/test_rate_limit.py` verify JWT issuance/verification, explicit public document-route access for the local reviewer stack, anonymous-chat flag behavior, per-session limits, per-IP limits via `query_audit_log.client_ip`, `Retry-After`, and rate-limit-before-cache behavior. Rate-limit tests use DB fixtures rather than external counters.
 - **BC21-BC28 Corrective Tests:** Scheduler singleton tests verify Postgres advisory-lock execution and lock release. Cost/index/cache tests cover `MODEL_PRICING_JSON`, rate-limit indexes, and semantic-cache `embedding_model` scoping/drift cleanup. Numeric grounding tests enforce exact clinical numeric output matching, including 5 ml pass / 15 ml fail and tolerance ignored for generated answers. Anomaly/Judge/Gold tests cover cadence split, reproducible `JudgeAgent` metadata, SQLAlchemy-backed gold eval persistence, verified-question skipping, and rubric/deviation math. Deterministic tests inject fake chat and fake judge clients and never call hosted LLMs.
 
 ### 2.4 Current Cycle Verification Log
@@ -262,9 +263,19 @@ To run deterministic frontend tests:
 
 ---
 
+## 3.5 Chainlit Client Tests
+
+Chainlit client tests use Python's built-in `unittest` runner with a stubbed Chainlit module and fake HTTP client:
+
+```sh
+python3 -m unittest chainlit_app.tests.test_chat -v
+```
+
+---
+
 ## 4. End-to-End Integration Tests (`Playwright`)
 
-Playwright tests should execute in a real headless browser environment to ensure backend services, relational databases, and frontend components communicate correctly. The current frontend package does not yet include a Playwright dependency, config file, or e2e spec; treat the commands below as the intended smoke-test entry points once that scaffold is added.
+Playwright tests execute in a real headless browser environment to ensure backend services, relational databases, Chainlit, and frontend components communicate correctly. The current smoke spec generates its own table-bearing PDF fixture at runtime, so no PDF binary is committed.
 
 ### 4.1 Prerequisites
 Before running E2E tests, ensure the local Docker containers are running and healthy:
@@ -274,31 +285,40 @@ docker compose -p assessment up -d --build
 
 Make sure Playwright browsers are installed locally (or inside your execution host):
 ```sh
-npx playwright install --prefix frontend
+npm --prefix frontend run playwright:install
 ```
 
 Set `PLAYWRIGHT_BASE_URL` in the shell when running specs against a non-default frontend URL:
 
 ```sh
-PLAYWRIGHT_BASE_URL=http://localhost:3000 npx playwright test --prefix frontend
+PLAYWRIGHT_BASE_URL=http://localhost:3000 npm --prefix frontend run test:e2e
 ```
 
-### 4.2 Intended Playwright Commands
-After Playwright is added, use these commands to execute the E2E suite and verify the complete ingestion-to-citation-retrieval pipeline:
+Optional URL overrides:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://localhost:3000 \
+PLAYWRIGHT_API_BASE_URL=http://localhost:6100/api/v1 \
+PLAYWRIGHT_CHAINLIT_BASE_URL=http://localhost:8000 \
+npm --prefix frontend run test:e2e
+```
+
+### 4.2 Playwright Commands
+Use these commands to execute the E2E suite and verify the complete ingestion-to-citation-retrieval pipeline:
 
 *   **Execute all E2E specs:**
     ```sh
-    npx playwright test --prefix frontend
+    npm --prefix frontend run test:e2e
     ```
 
 *   **Execute Playwright with the interactive UI runner (highly recommended for local debugging):**
     ```sh
-    npx playwright test --ui --prefix frontend
+    npm --prefix frontend run test:e2e -- --ui
     ```
 
 *   **View test reports:**
     ```sh
-    npx playwright show-report --prefix frontend
+    npm --prefix frontend run playwright:report
     ```
 
 ---
@@ -329,4 +349,4 @@ After Playwright is added, use these commands to execute the E2E suite and verif
         *   *Ubuntu/Debian:* `sudo apt-get install poppler-utils tesseract-ocr`
         *   *macOS (Homebrew):* `brew install poppler tesseract`
 *   **Error: Playwright browsers missing**
-    *   *Fix:* Execute `npx playwright install` within the target environment before initiating E2E runs.
+    *   *Fix:* Execute `npm --prefix frontend run playwright:install` within the target environment before initiating E2E runs.

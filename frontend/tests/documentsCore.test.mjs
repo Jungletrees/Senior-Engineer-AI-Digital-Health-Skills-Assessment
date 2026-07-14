@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import {
-  buildAuthHeaders,
   mergePolledDocument,
   optimisticRemove,
+  requestJson,
   rollbackRemove,
   uploadDocumentWithProgress,
   validateUploadFile,
@@ -36,19 +36,41 @@ test("upload limits drive MIME and size validation before network", () => {
   });
 });
 
-test("auth header helper includes bearer token when present", () => {
-  assert.deepEqual(buildAuthHeaders(() => "abc123"), { Authorization: "Bearer abc123" });
-  assert.deepEqual(buildAuthHeaders(() => null), {});
+test("requestJson calls document endpoints without auth session bootstrap", async () => {
+  const originalFetch = global.fetch;
+  const calls = [];
+
+  global.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), headers: options.headers || {} });
+    return {
+      ok: true,
+      status: 200,
+      json: async () => [{ id: "doc-1", status: "indexed" }],
+    };
+  };
+
+  try {
+    const documents = await requestJson("/documents");
+    assert.deepEqual(documents, [{ id: "doc-1", status: "indexed" }]);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url, "http://localhost:6100/api/v1/documents");
+    assert.deepEqual(calls[0].headers, {});
+  } finally {
+    global.fetch = originalFetch;
+  }
 });
 
 test("upload progress indicator receives XHR progress events", async () => {
   const progress = [];
+  const headers = [];
   class FakeXHR {
     upload = {};
     status = 202;
     responseText = JSON.stringify({ id: "1", status: "processing" });
     open() {}
-    setRequestHeader() {}
+    setRequestHeader(key, value) {
+      headers.push([key, value]);
+    }
     send() {
       this.upload.onprogress({ lengthComputable: true, loaded: 50, total: 100 });
       this.onload();
@@ -60,6 +82,7 @@ test("upload progress indicator receives XHR progress events", async () => {
     () => new FakeXHR(),
   );
   assert.deepEqual(progress, [50]);
+  assert.deepEqual(headers, []);
   assert.equal(result.status, "processing");
 });
 

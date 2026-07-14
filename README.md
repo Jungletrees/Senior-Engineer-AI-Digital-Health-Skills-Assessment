@@ -2,9 +2,9 @@
 
 This repository implements a clinical-document retrieval-augmented generation system for uploaded PDF guidance. The stack keeps the original service boundaries: a Next.js document-management frontend, a Chainlit chat container, a FastAPI backend, and PostgreSQL with pgvector for document, chunk, audit, cache, and evaluation data.
 
-The backend is the source of truth for ingestion, retrieval, generation, guardrails, caching, scheduling, and gold-standard evaluation. Uploaded PDFs are validated and stored through the API; the ingestion worker path parses page metadata, chunks content, embeds text, and indexes into PostgreSQL/pgvector, but automatic enqueueing from the upload route remains a known limitation. Chat requests run through input validation, exact/semantic cache lookup, hybrid retrieval, local cross-encoder reranking, optional query expansion, grounded answer generation, output filtering, and audit logging.
+The backend is the source of truth for ingestion, retrieval, generation, guardrails, caching, scheduling, and gold-standard evaluation. Uploaded PDFs are validated and stored through the API, then the upload route visibly enqueues the ingestion worker to parse page metadata, chunk content, embed text, and index into PostgreSQL/pgvector. Chat requests run through input validation, exact/semantic cache lookup, hybrid retrieval, local cross-encoder reranking, optional query expansion, grounded answer generation, structured citation assembly, output filtering, and audit logging.
 
-The implementation is submission-ready as a backend and document-ingestion system with deterministic test coverage. Some UI-facing requirements remain explicit limitations: the Chainlit app is still a thin shell, the root Next.js page renders backend status rather than a full chat surface, Chicago-style superscript citation rendering is not complete, and Playwright e2e tests are documented but not scaffolded.
+The implementation is submission-ready for the deterministic backend/document-ingestion scope. The production-gap closure pass adds Chainlit-to-`/api/v1/chat` wiring, answer-level Chicago-style citation notes, a native Next.js chat workspace, public local document upload/list/delete routes, and a Playwright smoke scaffold. Real gold-evaluation score floors remain trust-gated until corpus download/checksum/indexing and human expected-answer verification are complete.
 
 ## Reviewer Build Status
 
@@ -12,13 +12,13 @@ The implementation is submission-ready as a backend and document-ingestion syste
 |---|---|---|
 | BC16-BC28 backend corrective scope | Verified complete for deterministic scope | Last known full backend run: `120 passed, 12 skipped, 4 warnings`; targeted scheduler, cost, cache, numeric grounding, anomaly, judge, and gold-standard tests passed. |
 | FastAPI health/docs | Complete | `/health` returns `{"status":"ok","database":"ok"}` in the last smoke test; OpenAPI is available at `/docs`. |
-| Documents API validation/storage | Partial | Upload validation, storage, dedup, list, poll, and delete are implemented; the route stores `processing` records but does not visibly enqueue the ingestion worker yet. |
+| Documents API validation/storage | Complete for local public route contract | Upload validation, storage, dedup, list, poll, delete, and background worker enqueueing are implemented without IAM/JWT gating; deterministic route tests assert public access plus worker scheduling for new uploads and no reschedule for indexed duplicates. |
 | Ingestion worker | Verified complete in deterministic tests | Worker path indexes a `processing` document, persists chunks/page images, and marks it `indexed` under fake clients. |
-| Backend `/api/v1/chat` | Verified complete for backend contract | Idempotency, rate limit, cache ordering, retrieval/generation, filtering, audit, and `source_chunk_ids` persistence are tested. |
-| Chainlit chat UI | Not complete | Chainlit container starts, but the handler currently echoes messages and is not wired to `/api/v1/chat`. |
-| Chicago superscript citations | Partial | Backend has source lineage, but structured citation response and UI footnote rendering are incomplete. |
-| Frontend `/documents` UI | Partial | Deterministic helper tests pass; browser responsive and upload-to-indexed e2e verification are not complete. |
-| Playwright e2e | Not complete | No Playwright dependency, config, or spec is scaffolded. |
+| Backend `/api/v1/chat` | Verified complete for backend contract | Idempotency, rate limit, cache ordering, retrieval/generation, filtering, audit, `source_chunk_ids`, and structured citation metadata are tested. |
+| Chainlit chat UI | Implemented, live smoke pending in this pass | Chainlit posts to `/api/v1/chat`, preserves backend session IDs, handles in-flight/unavailable responses, and renders citation notes from backend metadata. |
+| Chicago superscript citations | Implemented as answer-level notes | Backend returns document title, chunk ID, page number, section path, and snippet. Chainlit appends superscript markers and Chicago-style notes. Per-sentence multi-source citation placement remains a future refinement. |
+| Frontend `/documents` UI | Partial pending live browser pass | Deterministic helper tests pass; Playwright now covers upload-to-indexed in a live stack, but responsive breakpoint review still needs manual/browser confirmation. |
+| Playwright e2e | Scaffolded | `@playwright/test`, config, and an upload-to-Chainlit citation smoke spec are present. Browser binaries must be installed in the execution environment. |
 | Gold-standard workflow | Implemented, not yet trusted with real scores | Runner, persistence, rubric, reports, and deterministic tests exist; real scores require corpus fetch, checksum pinning, indexing, and human expected-answer verification. |
 | Clean-clone validation | Not complete | A clean clone has not been run for this checklist pass. |
 | AWS deployment | Planned | AWS architecture, Lambda/Bedrock rationale, security, and CI/CD plan are documented; no live deployment or IaC exists. |
@@ -42,17 +42,17 @@ PostgreSQL :5432 + pgvector
         |-- gold_eval_run, gold_eval_result, anomaly_flag
 
 Chainlit :8000
-        |-- retained as the chat container, but not yet wired to /api/v1/chat
+        |-- posts to FastAPI /api/v1/chat and renders citation notes
 ```
 
 Core backend components:
 
 - **Frontend:** Next.js `/documents` page for PDF upload, client-side validation, progress display, document polling, and delete.
-- **Chat UI:** Chainlit container exists, but currently echoes messages instead of calling the backend chat API.
-- **Backend:** FastAPI with async SQLAlchemy sessions, CORS/security middleware, JWT session tokens, rate limits, and OpenAPI at `/docs`.
+- **Chat UI:** Chainlit calls the backend chat API, keeps the returned session ID, and renders answer-level citation notes.
+- **Backend:** FastAPI with async SQLAlchemy sessions, CORS/security middleware, optional JWT session tokens for closed-chat mode, rate limits, and OpenAPI at `/docs`.
 - **Database:** PostgreSQL 16 with pgvector, HNSW vector index, generated `content_tsv`, and Alembic migrations.
 - **Retrieval:** vector search plus PostgreSQL full-text search, Reciprocal Rank Fusion, local `sentence-transformers` CrossEncoder reranking, and gated query expansion.
-- **Generation:** backend `/api/v1/chat` assembles grounded context and returns `source_chunk_ids`; UI-level Chicago superscript footnotes are a known gap.
+- **Generation:** backend `/api/v1/chat` assembles grounded context and returns `source_chunk_ids` plus structured citation metadata for clients.
 - **Guardrails:** input validation, prompt-injection delimiter sanitization, output grounding checks, exact numeric/dosage grounding, and cache write eligibility.
 - **Caches:** exact normalized-query cache and semantic cache scoped by embedding model.
 - **Scheduler:** cache hygiene, retrospective grading, anomaly detection, and gold-eval jobs guarded by PostgreSQL advisory locks.
@@ -90,20 +90,20 @@ Service URLs:
 | Service | URL | Notes |
 |---|---|---|
 | Frontend | http://localhost:3000 | Root status page and `/documents` UI |
-| Documents page | http://localhost:3000/documents | Requires a JWT token in browser storage for API calls |
-| Chainlit | http://localhost:8000 | Container starts; backend chat wiring remains a limitation |
+| Documents page | http://localhost:3000/documents | Public local upload/list/status/delete UI; no browser token required |
+| Chainlit | http://localhost:8000 | Chat UI wired to backend `/api/v1/chat` |
 | Backend | http://localhost:6100 | FastAPI app |
 | Backend health | http://localhost:6100/health | Returns database health |
 | Backend docs | http://localhost:6100/docs | OpenAPI docs |
 | PostgreSQL | localhost:5432 | `pgvector/pgvector:pg16` |
 
-Document-management endpoints require a JWT:
+Document-management endpoints are intentionally public for the local reviewer stack and do not require IAM, hosted auth, or a JWT:
 
 ```sh
-curl -s -X POST http://localhost:6100/api/v1/auth/session
+curl -s http://localhost:6100/api/v1/documents
 ```
 
-Use the returned `access_token` as `Authorization: Bearer <token>` for `/api/v1/documents*`. The chat endpoint remains anonymous when `ANONYMOUS_CHAT_ALLOWED=true`; set it to `false` to require the same token for `/api/v1/chat`.
+The `/api/v1/auth/session` endpoint remains available only for optional closed-chat mode. Chat is anonymous when `ANONYMOUS_CHAT_ALLOWED=true`; set it to `false` to require a bearer token for `/api/v1/chat`.
 
 ## Verification
 
@@ -144,10 +144,11 @@ docker compose -p assessment exec backend pytest
 npm test --prefix frontend -- --runInBand
 ```
 
-Playwright is not scaffolded in the current frontend package. Do not claim e2e status until a Playwright dependency, config, and spec are added and this command succeeds:
+Run Playwright smoke after the stack is rebuilt and Playwright browser binaries are installed:
 
 ```sh
-PLAYWRIGHT_BASE_URL=http://localhost:3000 npx playwright test --prefix frontend
+npm --prefix frontend run playwright:install
+PLAYWRIGHT_BASE_URL=http://localhost:3000 npm --prefix frontend run test:e2e
 ```
 
 ## Dependency and Build Reliability Notes
@@ -164,7 +165,7 @@ The backend Docker build had two dependency failures that are now documented and
 - A later empty wheel payload/hash error occurred during the large `sentence-transformers` / torch dependency chain. The architecture-safe fix was to pin CPU-only `torch==2.9.1+cpu` through the official PyTorch CPU wheel index before installing `sentence-transformers`. This preserves the local CrossEncoder reranking architecture while avoiding CUDA wheel downloads and reducing image fragility, size, and cost.
 - The backend Docker build context is the repository root. `.dockerignore` keeps the context small while allowing `backend/`, `gold_standard/`, and `pytest.ini` into the image so scheduled gold evaluation imports work in production-like containers.
 - `poppler-utils` and `tesseract-ocr` are runtime system packages, not Python dependencies. They are installed in the backend image for PDF rasterization and OCR fallback.
-- Chainlit dependency resolution is intentionally handled with `uv pip install` in `chainlit_app/Dockerfile` to avoid very slow pip resolver backtracking in the Chainlit/OpenTelemetry dependency tree.
+- Chainlit dependency resolution is intentionally handled with `uv pip install` in `chainlit_app/Dockerfile` to avoid very slow pip resolver backtracking in the Chainlit/OpenTelemetry dependency tree. `httpx` is an explicit Chainlit dependency because the chat UI now calls FastAPI directly.
 
 ## Gold-Standard Evaluation
 
@@ -189,7 +190,7 @@ Do not trust gold scores until the corpus PDFs have been fetched, SHA-256 hashes
 ## Security Posture
 
 - No real secrets are committed; `.env.example` uses placeholders.
-- JWT session tokens protect document-management endpoints. Anonymous chat is an explicit environment-controlled option.
+- Document-management endpoints are public for the local reviewer stack; optional JWT session tokens are retained only for closed-chat mode when anonymous chat is disabled.
 - Upload validation checks PDF magic bytes, parsed page count, MIME allow-list, and size limits before persistence.
 - CORS is environment-driven through `CORS_ALLOWED_ORIGINS`; production should use explicit origins only.
 - Database access uses SQLAlchemy/parameterized SQL. The pgvector/full-text retrieval SQL is written with bound parameters.
@@ -200,7 +201,7 @@ Do not trust gold scores until the corpus PDFs have been fetched, SHA-256 hashes
 ## Scalability Posture
 
 - FastAPI request handling and database access use async SQLAlchemy sessions with a configured connection pool.
-- Upload requests persist a document record and are designed around background ingestion; a queue is the production next step for high-volume PDF processing.
+- Upload requests persist a document record and enqueue background ingestion; a durable queue is the production next step for high-volume PDF processing.
 - The backend is stateless across replicas; session, cache, audit, grading, and trace data live in PostgreSQL.
 - Scheduled jobs are protected by PostgreSQL advisory locks so horizontal replicas do not duplicate cache hygiene, grading, anomaly, or gold-eval jobs.
 - Exact and semantic caches reduce repeated retrieval/generation work. Semantic cache rows are scoped by embedding model to avoid cross-model vector comparisons.
@@ -208,11 +209,10 @@ Do not trust gold scores until the corpus PDFs have been fetched, SHA-256 hashes
 
 ## Current Limitations and Assumptions
 
-- The backend `/api/v1/chat` exists and is tested, but the Chainlit app is not yet wired to it.
-- The upload endpoint stores a `processing` document record and the ingestion worker can index it, but the current route does not visibly enqueue that worker in the request path.
-- The UI does not yet render Chicago notes-bibliography superscript citations. The backend returns `source_chunk_ids`; the production next step is a citation contract that includes document title, page number, and per-sentence superscript mapping assembled from retrieved metadata rather than generated by the model.
+- The Chainlit citation renderer uses answer-level superscript markers and notes from backend citation metadata. Per-sentence multi-source citation placement is not implemented.
+- The upload route uses FastAPI background tasks for local/development ingestion. For production scale, replace that with S3/SQS/EventBridge or another durable queue-backed worker while preserving the same idempotent document state checks.
 - Responsive UI verification has deterministic source tests, but no browser/device pass has been run in this checklist build. Breakpoints to verify manually are 375, 768, 1024, and 1440 px.
-- Playwright e2e is planned, not implemented or run.
+- Playwright e2e is scaffolded; execution requires installed browser binaries and the updated Docker stack running on ports 3000, 8000, 6100, and 5432.
 - Gold-standard real scores are not trusted until corpus fetch, checksum pinning, indexing, and expected-answer verification are complete.
 - Clean-clone validation has not been performed in this checklist build.
 - AWS deployment is a documented production plan, not evidence of a live deployment.

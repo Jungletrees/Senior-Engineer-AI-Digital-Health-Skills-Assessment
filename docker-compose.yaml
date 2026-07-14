@@ -51,6 +51,8 @@ services:
       dockerfile: Dockerfile
     environment:
       BACKEND_URL: ${BACKEND_URL:-http://backend:6100}
+      CHAINLIT_BACKEND_AUTH_TOKEN: ${CHAINLIT_BACKEND_AUTH_TOKEN:-}
+      CHAINLIT_BACKEND_TIMEOUT_SECONDS: ${CHAINLIT_BACKEND_TIMEOUT_SECONDS:-30}
       CHAINLIT_AUTH_SECRET: ${CHAINLIT_AUTH_SECRET:-}
     restart: always
     depends_on:

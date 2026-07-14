@@ -11,7 +11,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,6 +25,7 @@ from app.core.cost import compute_cost
 from app.core.errors import RateLimitExceededError, ValidationError
 from app.database import get_db
 from app.generation.client import GenerationClient, get_generation_client
+from app.retrieval.models import RetrievalCandidate
 from app.security.auth import require_auth
 from app.security.guardrails import filter_output, validate_chat_message_for_audit
 from app.security.rate_limit import enforce_chat_rate_limit, get_client_ip
@@ -43,11 +44,22 @@ class ChatRequest(BaseModel):
     session_id: UUID | None = None
 
 
+class Citation(BaseModel):
+    number: int
+    chunk_id: UUID
+    document_id: UUID
+    document_title: str
+    page_number: int | None = None
+    section_path: str | None = None
+    snippet: str | None = None
+
+
 class ChatResponse(BaseModel):
     session_id: UUID
     answer: str
     cache_status: str
     source_chunk_ids: list[UUID]
+    citations: list[Citation] = Field(default_factory=list)
     query_audit_log_id: UUID
     output_filter_status: str
     output_filter_reason: str | None = None
@@ -152,6 +164,7 @@ async def chat(
     _inject_conversation_context(payload_for_generation.messages, conversation.messages)
     generated = await generation_client.generate(payload_for_generation, max_tokens=settings.max_output_tokens_chat)
     filtered = await filter_output(generated.answer, payload_for_generation.source_chunks)
+    citations = _build_citations(payload_for_generation.source_chunks)
     source_doc_ids = sorted({chunk.document_id for chunk in payload_for_generation.source_chunks}, key=str)
     eligible = filtered.status == "passed"
     await write_exact_cache(db, payload.message, filtered.answer, source_doc_ids, eligible=eligible)
@@ -192,6 +205,7 @@ async def chat(
         answer=filtered.answer,
         cache_status="miss",
         source_chunk_ids=payload_for_generation.source_chunk_ids,
+        citations=citations,
         query_audit_log_id=audit_id,
         output_filter_status=filtered.status,
         output_filter_reason=filtered.reason,
@@ -300,11 +314,13 @@ async def _completed_response_for_key(db: AsyncSession, session_id: UUID, idempo
     answer = await _latest_assistant_answer(db, session_id)
     if answer is None:
         return None
+    source_chunk_ids = list(audit["retrieved_chunk_ids"] or answer["source_chunk_ids"] or [])
     return ChatResponse(
         session_id=session_id,
         answer=answer["content"],
         cache_status=str(audit["cache_status"] or "miss"),
-        source_chunk_ids=list(audit["retrieved_chunk_ids"] or []),
+        source_chunk_ids=source_chunk_ids,
+        citations=await _citations_for_chunk_ids(db, source_chunk_ids),
         query_audit_log_id=audit["id"],
         output_filter_status=str(audit["output_filter_status"]),
         output_filter_reason=audit["output_filter_reason"],
@@ -342,6 +358,7 @@ async def _finalize_cached_hit(
         answer=answer,
         cache_status=cache_status,
         source_chunk_ids=[],
+        citations=[],
         query_audit_log_id=audit_id,
         output_filter_status="passed",
     )
@@ -379,6 +396,7 @@ async def _finalize_no_retrieval(
         answer=answer,
         cache_status=cache_status,
         source_chunk_ids=[],
+        citations=[],
         query_audit_log_id=audit_id,
         output_filter_status="passed",
     )
@@ -442,6 +460,71 @@ async def _latest_assistant_answer(db: AsyncSession, session_id: UUID) -> dict[s
             {"session_id": session_id},
         )
     ).mappings().first()
+
+
+def _build_citations(chunks: list[RetrievalCandidate]) -> list[Citation]:
+    citations: list[Citation] = []
+    seen: set[UUID] = set()
+    for chunk in chunks:
+        if chunk.chunk_id in seen:
+            continue
+        seen.add(chunk.chunk_id)
+        citations.append(
+            Citation(
+                number=len(citations) + 1,
+                chunk_id=chunk.chunk_id,
+                document_id=chunk.document_id,
+                document_title=chunk.document_filename,
+                page_number=chunk.page_number,
+                section_path=chunk.section_path,
+                snippet=_citation_snippet(chunk.content),
+            )
+        )
+    return citations
+
+
+async def _citations_for_chunk_ids(db: AsyncSession, chunk_ids: list[UUID]) -> list[Citation]:
+    if not chunk_ids:
+        return []
+    stmt = text(
+        """
+        SELECT c.id AS chunk_id, c.document_id, d.filename AS document_title,
+               c.page_number, c.section_path, c.content
+        FROM chunks c
+        JOIN documents d ON d.id = c.document_id
+        WHERE c.id IN :chunk_ids
+        """
+    ).bindparams(bindparam("chunk_ids", expanding=True))
+    rows = (await db.execute(stmt, {"chunk_ids": chunk_ids})).mappings().all()
+    by_id = {row["chunk_id"]: row for row in rows}
+    citations: list[Citation] = []
+    seen: set[UUID] = set()
+    for chunk_id in chunk_ids:
+        if chunk_id in seen:
+            continue
+        seen.add(chunk_id)
+        row = by_id.get(chunk_id)
+        if row is None:
+            continue
+        citations.append(
+            Citation(
+                number=len(citations) + 1,
+                chunk_id=row["chunk_id"],
+                document_id=row["document_id"],
+                document_title=str(row["document_title"]),
+                page_number=row["page_number"],
+                section_path=row["section_path"],
+                snippet=_citation_snippet(str(row["content"])),
+            )
+        )
+    return citations
+
+
+def _citation_snippet(content: str, limit: int = 240) -> str:
+    normalized = " ".join(content.split())
+    if len(normalized) <= limit:
+        return normalized
+    return f"{normalized[: limit - 1].rstrip()}..."
 
 
 def _inject_conversation_context(messages: list[dict[str, Any]], conversation_messages: list[dict[str, str]]) -> None:

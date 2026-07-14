@@ -30,7 +30,7 @@ docker compose -p assessment exec backend alembic upgrade head
 |---|---|---|
 | Frontend | http://localhost:3000 | Project status page and entry point |
 | Documents UI | http://localhost:3000/documents | PDF upload and document management |
-| Chainlit | http://localhost:8000 | Containerized chat shell; backend wiring is still a limitation |
+| Chainlit | http://localhost:8000 | Chat UI wired to FastAPI `/api/v1/chat` |
 | Backend API | http://localhost:6100 | FastAPI backend |
 | Backend health | http://localhost:6100/health | App and database health |
 | Backend docs | http://localhost:6100/docs | OpenAPI documentation |
@@ -54,13 +54,21 @@ Expected backend health response:
 {"status":"ok","database":"ok"}
 ```
 
-Document-management API calls require a JWT token:
+Document-management API calls are public in the local reviewer stack:
 
 ```sh
-curl -s -X POST http://localhost:6100/api/v1/auth/session
+curl -s http://localhost:6100/api/v1/documents
 ```
 
-Use the returned `access_token` as `Authorization: Bearer <token>` for `/api/v1/documents*`.
+No IAM provider, hosted auth provider, browser token, or bearer header is required for upload/list/status/delete document routes. `/api/v1/auth/session` remains available only if you disable anonymous chat with `ANONYMOUS_CHAT_ALLOWED=false`.
+
+Run the browser smoke after the stack is healthy:
+
+```sh
+npm install --prefix frontend
+npm --prefix frontend run playwright:install
+PLAYWRIGHT_BASE_URL=http://localhost:3000 npm --prefix frontend run test:e2e
+```
 
 ## Known Build Notes
 

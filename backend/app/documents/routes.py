@@ -1,21 +1,23 @@
 import hashlib
 import io
+import logging
 from pathlib import Path
 from uuid import UUID
 import pdfplumber
 
-from fastapi import APIRouter, Depends, File, UploadFile, HTTPException, Header, status
+from fastapi import APIRouter, BackgroundTasks, Depends, File, UploadFile, HTTPException, status
 from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Document
 from app.documents.storage import delete_document_ref, put_document_bytes
-from app.security.auth import AuthSession, require_auth
 from app.settings import settings
+from app.worker import process_document
 
 # Router setup
 router = APIRouter(prefix="/api/v1/documents", tags=["documents"])
+logger = logging.getLogger(__name__)
 
 
 def get_max_pdf_size_mb() -> int:
@@ -35,11 +37,11 @@ def get_upload_storage_backend() -> str:
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
 async def upload_document(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db),
-    current_user: AuthSession = Depends(require_auth),
 ):
-    """Enforce size/MIME/page limit checks, handle content-hash dedup, and accept PDF for ingestion."""
+    """Enforce size/MIME/page limit checks, deduplicate content, and enqueue ingestion."""
     # Retrieve limits dynamically using getter helpers for perfect test mock surface
     max_pdf_size_mb = get_max_pdf_size_mb()
     max_pdf_pages = get_max_pdf_pages()
@@ -128,6 +130,7 @@ async def upload_document(
     db.add(new_doc)
     await db.commit()
     await db.refresh(new_doc)
+    background_tasks.add_task(_process_document_background, new_doc.id)
 
     return {
         "id": str(new_doc.id),
@@ -138,11 +141,18 @@ async def upload_document(
     }
 
 
+async def _process_document_background(document_id: UUID) -> None:
+    """Run ingestion after the upload response without surfacing worker failures to the client."""
+    try:
+        await process_document(document_id)
+    except Exception:
+        logger.exception("document_ingestion.background_failed document_id=%s", document_id)
+
+
 @router.get("/{document_id}")
 async def get_document_status(
     document_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: AuthSession = Depends(require_auth),
 ):
     """Retrieve document record for processing status polling."""
     stmt = select(Document).where(Document.id == document_id)
@@ -168,7 +178,6 @@ async def get_document_status(
 @router.get("")
 async def list_documents(
     db: AsyncSession = Depends(get_db),
-    current_user: AuthSession = Depends(require_auth),
 ):
     """List all documents to populate frontend management table."""
     stmt = select(Document).order_by(desc(Document.uploaded_at))
@@ -192,7 +201,6 @@ async def list_documents(
 async def delete_document(
     document_id: UUID,
     db: AsyncSession = Depends(get_db),
-    current_user: AuthSession = Depends(require_auth),
 ):
     """Delete document from relational DB and clean up its physical file on disk."""
     stmt = select(Document).where(Document.id == document_id)

@@ -18,7 +18,6 @@ from sqlalchemy import select
 from app.database import get_db, DATABASE_URL
 from app.documents.routes import router
 from app.models import Base, Document
-from app.security.auth import issue_session_token
 
 # Resolve directories relative to backend root
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
@@ -37,10 +36,6 @@ async_test_session_factory = async_sessionmaker(
 # Single unified test application
 test_app = FastAPI()
 test_app.include_router(router)
-
-
-def auth_headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {issue_session_token()}"}
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -110,7 +105,6 @@ async def test_upload_rejections_file_size_exceeded(mock_db_override):
             response = await client.post(
                 "/api/v1/documents",
                 files={"file": ("large_file.pdf", large_content, "application/pdf")},
-                headers=auth_headers(),
             )
             assert response.status_code == 413
             assert "exceeds the maximum ceiling" in response.json()["detail"]
@@ -125,7 +119,6 @@ async def test_upload_rejections_invalid_magic_bytes(mock_db_override):
         response = await client.post(
             "/api/v1/documents",
             files={"file": ("fake_disguised_file.pdf", fake_pdf_content, "application/pdf")},
-            headers=auth_headers(),
         )
         assert response.status_code == 415
         assert "Unsupported Media Type" in response.json()["detail"]
@@ -149,7 +142,6 @@ async def test_upload_rejections_page_count_exceeded(mock_db_override):
                 response = await client.post(
                     "/api/v1/documents",
                     files={"file": ("too_many_pages.pdf", pdf_content, "application/pdf")},
-                    headers=auth_headers(),
                 )
                 assert response.status_code == 413
                 assert "exceeds maximum allowed boundary" in response.json()["detail"]
@@ -166,7 +158,6 @@ async def test_upload_rejections_invalid_pdf_format(mock_db_override):
             response = await client.post(
                 "/api/v1/documents",
                 files={"file": ("corrupted.pdf", pdf_content, "application/pdf")},
-                headers=auth_headers(),
             )
             assert response.status_code == 422
             assert "Unable to parse or read PDF pages" in response.json()["detail"]
@@ -201,21 +192,22 @@ async def test_upload_flow_success_and_cascade_delete(db_session, real_db_overri
         
         # 1. POST /api/v1/documents - Valid Upload
         with patch("app.documents.routes.pdfplumber.open", return_value=mock_pdf):
-            response = await client.post(
-                "/api/v1/documents",
-                files={"file": ("sample_test_doc.pdf", pdf_content, "application/pdf")},
-                headers=auth_headers(),
-            )
-            assert response.status_code == 202
-            data = response.json()
-            doc_id = data["id"]
-            assert data["status"] == "processing"
-            assert data["filename"] == "sample_test_doc.pdf"
-            assert data["page_count"] == 3
-            assert data["deduplicated"] is False
+            with patch("app.documents.routes.process_document", new_callable=AsyncMock) as process_document:
+                response = await client.post(
+                    "/api/v1/documents",
+                    files={"file": ("sample_test_doc.pdf", pdf_content, "application/pdf")},
+                )
+                assert response.status_code == 202
+                data = response.json()
+                doc_id = data["id"]
+                assert data["status"] == "processing"
+                assert data["filename"] == "sample_test_doc.pdf"
+                assert data["page_count"] == 3
+                assert data["deduplicated"] is False
+                process_document.assert_awaited_once_with(UUID(doc_id))
 
         # 2. GET /api/v1/documents/{id} - Poll Status
-        poll_response = await client.get(f"/api/v1/documents/{doc_id}", headers=auth_headers())
+        poll_response = await client.get(f"/api/v1/documents/{doc_id}")
         assert poll_response.status_code == 200
         poll_data = poll_response.json()
         assert poll_data["id"] == doc_id
@@ -223,7 +215,7 @@ async def test_upload_flow_success_and_cascade_delete(db_session, real_db_overri
         assert poll_data["page_count"] == 3
 
         # 3. GET /api/v1/documents - List Documents
-        list_response = await client.get("/api/v1/documents", headers=auth_headers())
+        list_response = await client.get("/api/v1/documents")
         assert list_response.status_code == 200
         list_data = list_response.json()
         # Check that our newly uploaded document is in the list
@@ -239,7 +231,7 @@ async def test_upload_flow_success_and_cascade_delete(db_session, real_db_overri
         assert os.path.exists(file_path)
 
         # 4. DELETE /api/v1/documents/{id} - Delete and clean up
-        delete_response = await client.delete(f"/api/v1/documents/{doc_id}", headers=auth_headers())
+        delete_response = await client.delete(f"/api/v1/documents/{doc_id}")
         assert delete_response.status_code == 200
         delete_data = delete_response.json()
         assert delete_data["id"] == doc_id
@@ -251,7 +243,6 @@ async def test_upload_flow_success_and_cascade_delete(db_session, real_db_overri
         # Verify document row is deleted from DB
         deleted_check = (await db_session.execute(stmt)).scalar_one_or_none()
         assert deleted_check is None
-
 
 @pytest.mark.asyncio
 async def test_upload_flow_deduplication(db_session, real_db_override):
@@ -266,28 +257,29 @@ async def test_upload_flow_deduplication(db_session, real_db_override):
         mock_pdf.pages = [MagicMock() for _ in range(5)]
         
         with patch("app.documents.routes.pdfplumber.open", return_value=mock_pdf):
-            # First Upload -> processing
-            response1 = await client.post(
-                "/api/v1/documents",
-                files={"file": ("unique_doc.pdf", pdf_content, "application/pdf")},
-                headers=auth_headers(),
-            )
-            doc_id = response1.json()["id"]
+            with patch("app.documents.routes.process_document", new_callable=AsyncMock) as process_document:
+                # First Upload -> processing
+                response1 = await client.post(
+                    "/api/v1/documents",
+                    files={"file": ("unique_doc.pdf", pdf_content, "application/pdf")},
+                )
+                doc_id = response1.json()["id"]
+                process_document.assert_awaited_once_with(UUID(doc_id))
 
-            # Simulate background worker completion by marking the document as 'indexed'
-            stmt = select(Document).where(Document.id == UUID(doc_id))
-            doc = (await db_session.execute(stmt)).scalar_one()
-            doc.status = "indexed"
-            await db_session.commit()
+                # Simulate background worker completion by marking the document as 'indexed'
+                stmt = select(Document).where(Document.id == UUID(doc_id))
+                doc = (await db_session.execute(stmt)).scalar_one()
+                doc.status = "indexed"
+                await db_session.commit()
 
-            # Second Upload of identical content -> Short circuits with 'indexed'
-            response2 = await client.post(
-                "/api/v1/documents",
-                files={"file": ("duplicate_doc.pdf", pdf_content, "application/pdf")},
-                headers=auth_headers(),
-            )
-            assert response2.status_code == 202
-            data2 = response2.json()
-            assert data2["id"] == doc_id
-            assert data2["status"] == "indexed"
-            assert data2["deduplicated"] is True
+                # Second Upload of identical content -> Short circuits with 'indexed'
+                response2 = await client.post(
+                    "/api/v1/documents",
+                    files={"file": ("duplicate_doc.pdf", pdf_content, "application/pdf")},
+                )
+                assert response2.status_code == 202
+                data2 = response2.json()
+                assert data2["id"] == doc_id
+                assert data2["status"] == "indexed"
+                assert data2["deduplicated"] is True
+                process_document.assert_awaited_once()

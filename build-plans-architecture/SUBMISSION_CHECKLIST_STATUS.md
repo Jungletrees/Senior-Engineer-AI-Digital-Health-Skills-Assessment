@@ -6,9 +6,9 @@ This audit corresponds to `LMH_Assessment_Submission_Checklist (2).md`. It recor
 
 | Area | Status | Notes |
 |---|---|---|
-| Chicago-style superscript citations | Partial | Backend chat returns `source_chunk_ids` and persists source lineage, but UI-level sequential superscripts, Chicago notes-bibliography footnotes, per-sentence multi-source mapping, and real-PDF manual spot checks are not complete. |
+| Chicago-style superscript citations | Partial | Backend chat now returns structured citation metadata and Chainlit renders answer-level superscripts plus Chicago-style notes. Per-sentence multi-source mapping and manual real-PDF spot checks remain future verification. |
 | Responsive PDF upload page | Partial | Next.js `/documents` exists with fluid CSS and deterministic helper tests. Browser/device checks at 375, 768, 1024, and 1440 px have not been run in this checklist pass. |
-| Scalable/secure/well-documented backend | Mostly complete | Async FastAPI/SQLAlchemy, upload validation, JWT document auth, rate limits, caches, advisory-lock scheduler, OpenAPI, and docs are present. Upload-to-worker enqueueing and full UI citation workflow remain gaps. |
+| Scalable/secure/well-documented backend | Mostly complete | Async FastAPI/SQLAlchemy, upload validation, background ingestion enqueueing, JWT document auth, rate limits, caches, advisory-lock scheduler, OpenAPI, and docs are present. Production queueing remains a future scale step. |
 
 ## 1. Repository Root
 
@@ -29,8 +29,8 @@ This audit corresponds to `LMH_Assessment_Submission_Checklist (2).md`. It recor
 | Settings and env config | Complete | `backend/app/settings.py` centralizes runtime configuration. |
 | Async database sessions | Complete | `backend/app/database.py` uses async SQLAlchemy with pool settings outside tests. |
 | ORM and Alembic schema | Complete | Documents, chunks, pgvector, page images, chat, caches, audit, trace, grading, anomaly, and gold-eval tables are implemented. |
-| Upload API | Partial | Validates and stores PDFs, but the route does not currently enqueue `process_document`; worker indexing is tested separately. |
-| Chat API | Backend complete | `/api/v1/chat` implements idempotency, cache lookup, retrieval/generation, filtering, audit, and source chunk persistence. |
+| Upload API | Complete for local route contract | Validates/stores PDFs and schedules `process_document` as a FastAPI background task for new uploads; indexed duplicates short-circuit without duplicate enqueue. |
+| Chat API | Backend complete | `/api/v1/chat` implements idempotency, cache lookup, retrieval/generation, filtering, audit, source chunk persistence, and structured citation metadata. |
 | Health API | Complete | `/health` checks database connectivity. |
 | Ingestion/retrieval/generation services | Mostly complete | Worker, chunking, embeddings, hybrid retrieval, rerank, and generation boundary exist. Hosted-provider calls are mocked/fallback in deterministic tests. |
 | Backend tests | Complete for deterministic scope | Last known full backend run: `120 passed, 12 skipped, 4 warnings`. |
@@ -39,18 +39,18 @@ This audit corresponds to `LMH_Assessment_Submission_Checklist (2).md`. It recor
 
 | Area | Status | Notes |
 |---|---|---|
-| Documents page | Partial | `/documents` supports upload UI, progress, polling, list, delete, and auth headers. End-to-end ingestion is blocked by upload-worker enqueue gap. |
-| Chat UI | Not complete | No Next.js chat UI. Chainlit container exists but currently echoes messages instead of calling backend `/api/v1/chat`. |
-| Citation components | Not complete | No UI superscript citation or Chicago footnote components exist. |
+| Documents page | Partial | `/documents` supports upload UI, progress, polling, list, delete, and auth headers. Playwright now covers upload-to-indexed when the live stack and browser binaries are available. |
+| Chat UI | Complete in Chainlit | No Next.js chat UI. Chainlit is the chat surface and calls backend `/api/v1/chat`. |
+| Citation components | Partial | Chainlit renders answer-level superscript citation notes from backend metadata; per-sentence multi-source placement is not implemented. |
 | API client config | Partial | `NEXT_PUBLIC_API_BASE_URL` is supported and documented in `frontend/.env.local.example`. |
-| Frontend tests | Partial | Deterministic Node tests pass; no Jest/RTL component tests and no Playwright. |
+| Frontend tests | Partial | Deterministic Node tests pass and Playwright is scaffolded. Jest/RTL component tests and responsive breakpoint screenshots are not present. |
 
 ## 4. Chainlit
 
 | Area | Status | Notes |
 |---|---|---|
 | Container | Complete | `chainlit_app/Dockerfile` builds the service with `uv` dependency installation. |
-| Backend integration | Not complete | `chainlit_app/app/chat.py` is an echo handler and does not call FastAPI. |
+| Backend integration | Complete for chat contract | `chainlit_app/app/chat.py` posts to FastAPI `/api/v1/chat`, preserves backend session IDs, and handles unavailable/in-flight responses. |
 | Config/welcome docs | Not complete | No `.chainlit/config.toml` or `chainlit.md` found. |
 
 ## 5. CI/CD
@@ -91,7 +91,7 @@ Key assumptions are now stated in `README.md` and `ARCHITECTURE (4).md`: model c
 | Fork lineage/visibility | Not verified | Requires GitHub-side inspection. |
 | Incremental commits | Present historically | The checklist documentation buildrun was intentionally kept local until this reviewer-facing docs commit. |
 | Secrets not committed | Mostly verified | File scan found placeholders and docs only; the Git remote URL contains a token locally, which is not a committed file. |
-| Correct branch/link | Partial | Current branch is `codex/bc16-bc28-final-tests-deploy-grading-correctives`; default-branch submission state not verified. |
+| Correct branch/link | Partial | Current branch is `codex/production-gap-closure`; default-branch submission state not verified. |
 | No post-deadline changes | Not applicable here | Requires human submission timing control. |
 
 ## 9. Clean-Clone Dry Run
@@ -110,8 +110,8 @@ curl -s http://localhost:6100/health
 docker compose -p assessment down -v
 ```
 
-Manual UI checks should include upload, worker indexing, a grounded chat answer, an out-of-corpus refusal, and responsive breakpoints at 375, 768, 1024, and 1440 px after the UI/worker gaps are closed.
+Manual UI checks should include upload, worker indexing, a grounded chat answer, an out-of-corpus refusal, citation footnotes, and responsive breakpoints at 375, 768, 1024, and 1440 px.
 
 ## 10. Repo Integrity and Access Control
 
-Not fully performed because this buildrun must not commit, push, tag, archive, or change GitHub repository settings. Local status and remote freshness were checked before this pass; the branch was aligned with its remote commit, and the only non-ignored untracked files were then added to `.gitignore`.
+Not fully performed because repository visibility/access settings require GitHub-side inspection. Local git status and remote freshness should be checked again after the production-gap closure commit is pushed.

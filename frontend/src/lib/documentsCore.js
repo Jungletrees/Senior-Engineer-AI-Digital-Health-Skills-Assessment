@@ -4,18 +4,6 @@ export function getApiBaseUrl() {
   return process.env.NEXT_PUBLIC_API_BASE_URL || DEFAULT_API_BASE_URL;
 }
 
-export function getSessionToken() {
-  if (typeof window === "undefined" || !window.localStorage) {
-    return null;
-  }
-  return window.localStorage.getItem("session_token");
-}
-
-export function buildAuthHeaders(tokenProvider = getSessionToken) {
-  const token = tokenProvider();
-  return token ? { Authorization: `Bearer ${token}` } : {};
-}
-
 export function validateUploadFile(file, limits) {
   if (!limits.allowed_mime_types.length || !limits.max_size_mb) {
     return { ok: false, reason: "Upload limits are still loading." };
@@ -33,11 +21,12 @@ export function validateUploadFile(file, limits) {
 export async function requestJson(path, options = {}) {
   const response = await fetch(`${getApiBaseUrl()}${path}`, {
     ...options,
-    headers: {
-      ...(options.headers || {}),
-      ...buildAuthHeaders(),
-    },
+    headers: options.headers || {},
   });
+  return parseJsonResponse(response);
+}
+
+async function parseJsonResponse(response) {
   if (!response.ok) {
     throw new Error(`Request failed with ${response.status}`);
   }
@@ -53,10 +42,6 @@ export function uploadDocumentWithProgress(file, onProgress, xhrFactory = () => 
     const form = new FormData();
     form.append("file", file);
     xhr.open("POST", `${getApiBaseUrl()}/documents`);
-    const auth = buildAuthHeaders();
-    if (auth.Authorization) {
-      xhr.setRequestHeader("Authorization", auth.Authorization);
-    }
     xhr.upload.onprogress = (event) => {
       if (event.lengthComputable) {
         onProgress(Math.round((event.loaded / event.total) * 100));

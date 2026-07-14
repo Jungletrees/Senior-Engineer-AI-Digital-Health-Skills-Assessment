@@ -41,7 +41,7 @@ This is the single source of truth for the assessment build — architecture, re
 
 | # | Requirement | Addressed in | Summary |
 |---|---|---|---|
-| 1 | Chat interface, grounded responses | §5 (Chat Interface & UX), §7.5 (grounding check), §16 (citation strategy) | Backend chat API is implemented and grounded; Chainlit UI wiring and Chicago superscript rendering remain documented limitations |
+| 1 | Chat interface, grounded responses | §5 (Chat Interface & UX), §7.5 (grounding check), §16 (citation strategy) | Backend chat API is implemented and grounded; Chainlit calls `/api/v1/chat` and renders answer-level citation notes from backend metadata |
 | 2 | PDF upload, dedicated page | §4.5 (Frontend Upload UX) | Next.js `/documents` page: upload, progress, status list, delete |
 | 3 | RAG backend — scalable, secure, well-documented | §3 (cross-cutting summary), §4–§10, §15 (implementation), §12 (security) | See §3 for the direct answer to each of the three adjectives |
 | 4 | Database — pgvector tables/indexes | §6 (Database Schema) | HNSW + GIN indexes, Alembic migrations, `page_images` + `agent_trace_log` additions |
@@ -269,7 +269,7 @@ Tokens are streamed to the client as generated (Chainlit supports this natively)
 
 ### 5.2 Source citations — the direct answer to "grounded in the content of uploaded documents"
 
-Every assistant response carries the source document name and page number(s) for the chunks actually used, surfaced as an expandable reference element on the chat message. Backed by `source_chunk_ids` on `chat_messages` (§6). See §16 for a documented, not-yet-adopted upgrade to this mechanism.
+Every assistant response carries source lineage for the chunks actually used. The backend returns `source_chunk_ids` plus structured citation metadata (`chunk_id`, `document_id`, document title, page number, section path, snippet). Chainlit renders answer-level superscript markers with Chicago-style notes from that metadata. Per-sentence multi-source placement is a future refinement. See §16 for a documented, not-yet-adopted provider-native upgrade to this mechanism.
 
 ### 5.3 Empty and error states — unchanged
 
@@ -639,8 +639,8 @@ To safely execute this multi-provider agent model, API credentials are strictly 
 
 - Current deterministic frontend tests use Node's built-in test runner against `frontend/tests/documentsCore.test.mjs`. They verify the `/documents` helper layer: upload validation, API helper behavior, auth header inclusion, upload progress, mocked polling transitions, optimistic delete, and rollback.
 - Jest/RTL component tests are not scaffolded in the current frontend package.
-- Chainlit's backend step instrumentation is covered through the context-guarded shim tests; the `chainlit_app` browser UI is not yet wired to `/api/v1/chat`.
-- Playwright e2e is planned but not scaffolded. Do not claim the e2e path has passed until a Playwright dependency, config, and spec are added and the test is run. The intended high-value smoke remains: upload a PDF with a table → wait for `indexed` → ask a question whose answer depends on that table → receive a grounded response whose citation references the page that has a `page_images` row.
+- Chainlit's backend step instrumentation is covered through the context-guarded shim tests; the `chainlit_app` browser UI now calls `/api/v1/chat` through a small HTTP client and renders backend citation metadata as answer-level notes.
+- Playwright e2e is scaffolded in `frontend/e2e/upload-chainlit-citation.spec.ts`. The smoke generates a table-bearing PDF fixture at runtime, uploads it through `/documents`, waits for `indexed`, asks Chainlit a table-dependent question, and checks the expected table value plus a cited page note. Do not claim this path has passed unless the live Playwright command succeeds in the target environment.
 
 ### 11.4 Running tests — unchanged
 
@@ -983,7 +983,10 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 | Decision | Choice | Alternative considered | Why |
 |---|---|---|---|
 | Frontend/backend frameworks | Keep Next.js + FastAPI | Substitute either | Both already fit the task well; substitution would trade depth for no clear benefit here |
-| Chat surface | Backend `/api/v1/chat` first; Chainlit retained but not yet wired | Custom chat UI in Next.js | Backend RAG behavior is the stable contract. Chainlit remains the intended chat container, but current production readiness must not claim complete UI citation behavior until wiring and citation rendering are implemented. |
+| Chat surface | Backend `/api/v1/chat` first; Chainlit retained and wired as the browser chat UI | Custom chat UI in Next.js | Backend RAG behavior remains the stable contract. Chainlit is a thin client over that API and renders backend citation metadata; per-sentence citation placement can be refined without changing retrieval/generation internals. |
+| Upload-to-ingestion handoff | FastAPI background task for local upload enqueue, with document-status idempotency checks | Do nothing in-route; add SQS immediately | Closes the local reviewer-visible ingestion gap without adding undeployed infrastructure. Production scale should replace the task with a durable queue while keeping the same `processing`/`indexed`/`failed` state guard. |
+| Citation response contract | Backend returns structured citation metadata derived from retrieved chunks; Chainlit renders answer-level notes | Let the model generate citations free-form | Keeps citation data tied to persisted chunk/page metadata rather than model text. It is deterministic and testable, while per-sentence citation placement remains a UI refinement. |
+| Playwright PDF fixture | Generate a small table-bearing PDF at test runtime | Commit a binary PDF fixture | Satisfies the e2e table scenario without committing PDFs or duplicating corpus artifacts. The generated file is local test output only. |
 | Vector index type | pgvector HNSW | pgvector IVFFlat | No training step; performs better at low-to-moderate row counts, which is this assessment's regime |
 | Chunking strategy | Fixed-token (~480 tokens, 15% overlap) with structure-aware override | Pure semantic chunking | Benchmarked evidence favors fixed/recursive as the stronger default; semantic chunking only earns adoption after an A/B test |
 | Retrieval | Hybrid (lexical + vector) + rerank | Vector-only | Postgres full-text search is close to free and catches exact-term matches vector search under-ranks |
@@ -1281,6 +1284,8 @@ SESSION_TOKEN_EXPIRY_MINUTES=60
 ANONYMOUS_CHAT_ALLOWED=true
 CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8000
 CHAINLIT_AUTH_SECRET=
+CHAINLIT_BACKEND_AUTH_TOKEN=
+CHAINLIT_BACKEND_TIMEOUT_SECONDS=30
 
 # ── Storage ────────────────────────────────────────────
 UPLOAD_STORAGE_BACKEND=local          # local | s3

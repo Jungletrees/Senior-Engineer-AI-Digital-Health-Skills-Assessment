@@ -11,7 +11,7 @@ CloudFront + WAF
 Application Load Balancer or API Gateway
       |
       +--> Next.js frontend
-      +--> Chainlit chat UI, after backend chat wiring is complete
+      +--> Chainlit chat UI, wired to FastAPI /api/v1/chat
       +--> FastAPI backend
               |
               +--> RDS PostgreSQL 16 + pgvector, private subnets
@@ -27,7 +27,7 @@ Recommended components:
 |---|---|---|
 | Frontend | S3 + CloudFront for a static build, or ECS Fargate/App Runner for current Next.js server runtime | CloudFront gives edge caching when static; Fargate/App Runner avoids changing runtime assumptions. |
 | Backend API | ECS Fargate for the current container | Warm container is better for local reranker loading, PDF parsing/OCR, and async DB pooling. |
-| Chainlit | ECS Fargate behind ALB after wiring to `/api/v1/chat` | Keeps chat isolated while sharing backend logic. Omit from production until wired. |
+| Chainlit | ECS Fargate behind ALB, pointed at the private FastAPI service URL | Keeps chat isolated while sharing backend logic through `/api/v1/chat`. |
 | Database | Amazon RDS PostgreSQL 16 with pgvector | Managed backups, Multi-AZ, encryption, and PostgreSQL extension support. |
 | Object storage | Amazon S3 private buckets | Durable storage for uploaded PDFs and rasterized page images. |
 | Secrets | Secrets Manager or SSM Parameter Store | Runtime injection without committing or baking secrets into images. |

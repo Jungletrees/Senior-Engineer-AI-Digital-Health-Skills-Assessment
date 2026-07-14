@@ -250,6 +250,17 @@ async def test_query_audit_finalized_and_source_chunks_persist(migrated_session:
         response = await client.post("/api/v1/chat", json={"session_id": str(session_id), "message": "malaria"})
 
     payload = response.json()
+    assert payload["citations"] == [
+        {
+            "number": 1,
+            "chunk_id": str(candidate.chunk_id),
+            "document_id": str(candidate.document_id),
+            "document_title": "source.pdf",
+            "page_number": 1,
+            "section_path": None,
+            "snippet": "malaria treatment includes clinic follow up and artemisinin combination therapy",
+        }
+    ]
     audit = (
         await migrated_session.execute(
             text(

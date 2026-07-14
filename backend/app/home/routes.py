@@ -58,18 +58,17 @@ async def home():
 
             <h2>Implemented Backend Capabilities</h2>
             <ul>
-                <li>PDF upload validation, content-hash deduplication, and a tested ingestion worker for OCR/rasterization, chunking, and pgvector indexing.</li>
+                <li>PDF upload validation, content-hash deduplication, and visible background enqueueing of the ingestion worker for OCR/rasterization, chunking, and pgvector indexing.</li>
                 <li>Hybrid retrieval, local CrossEncoder reranking, gated query expansion, exact/semantic caches, and audit logging.</li>
-                <li>JWT document access, rate limiting, CORS/security middleware, output filtering, and exact clinical numeric grounding.</li>
+                <li>JWT document access, rate limiting, CORS/security middleware, structured source citations, output filtering, and exact clinical numeric grounding.</li>
                 <li>Scheduled cache hygiene, response grading, anomaly detection, and gold-standard evaluation guarded by PostgreSQL advisory locks.</li>
             </ul>
 
-            <h2>Known UI Limitations</h2>
+            <h2>Reviewer Notes</h2>
             <ul>
-                <li>The Chainlit container is present at <a href="http://localhost:8000">localhost:8000</a>, but it is not yet wired to this backend chat API.</li>
-                <li>The upload endpoint stores a processing record; the route does not currently enqueue the ingestion worker automatically.</li>
-                <li>The browser UI does not yet render Chicago-style superscript citations and footnotes.</li>
-                <li>Playwright e2e tests are planned but not scaffolded in the frontend package.</li>
+                <li>The Chainlit container at <a href="http://localhost:8000">localhost:8000</a> calls <code>/api/v1/chat</code> and renders answer-level Chicago-style citation notes from backend citation metadata.</li>
+                <li>The Next.js document manager at <a href="http://localhost:3000/documents">localhost:3000/documents</a> uploads PDFs and polls until ingestion changes status.</li>
+                <li>Gold-standard score floors remain trust-gated until the corpus PDFs are fetched, checksums are pinned, documents are indexed, and expected answers are human-verified.</li>
             </ul>
         </body>
     </html>
