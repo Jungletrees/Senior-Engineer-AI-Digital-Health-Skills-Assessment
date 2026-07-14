@@ -23,6 +23,8 @@ def traced(agent_name: str) -> Callable[[Callable[..., Awaitable[T]]], Callable[
         async def wrapper(*args: Any, **kwargs: Any) -> T:
             db = kwargs.pop("trace_db", None)
             document_id = kwargs.pop("trace_document_id", None)
+            session_id = kwargs.pop("trace_session_id", None)
+            query_audit_log_id = kwargs.pop("trace_query_audit_log_id", None)
             input_payload = kwargs.pop("trace_input", {})
             start = time.monotonic()
             output_payload: Any = None
@@ -41,6 +43,8 @@ def traced(agent_name: str) -> Callable[[Callable[..., Awaitable[T]]], Callable[
                         tool_name=fn.__name__,
                         input_payload=_redact(input_payload),
                         output_payload=_redact(output_payload) if error is None else None,
+                        session_id=session_id,
+                        query_audit_log_id=query_audit_log_id,
                         document_id=document_id,
                         duration_ms=int((time.monotonic() - start) * 1000),
                         error=error,
@@ -57,6 +61,8 @@ async def _write_trace_row(
     tool_name: str,
     input_payload: dict[str, Any],
     output_payload: Any,
+    session_id: Any,
+    query_audit_log_id: Any,
     document_id: Any,
     duration_ms: int,
     error: str | None,
@@ -80,8 +86,8 @@ async def _write_trace_row(
                 :tool_name,
                 CAST(:input AS jsonb),
                 CAST(:output AS jsonb),
-                NULL,
-                NULL,
+                :session_id,
+                :query_audit_log_id,
                 :document_id,
                 :duration_ms,
                 :error
@@ -93,6 +99,8 @@ async def _write_trace_row(
             "tool_name": tool_name,
             "input": _json_literal(input_payload),
             "output": _json_literal(output_payload) if output_payload is not None else None,
+            "session_id": session_id,
+            "query_audit_log_id": query_audit_log_id,
             "document_id": document_id,
             "duration_ms": duration_ms,
             "error": error,

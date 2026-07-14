@@ -50,3 +50,35 @@ class RerankResult(BaseModel):
     raw_logits: list[float]
     duration_ms: int
     provider: str
+
+
+class QueryExpansionResult(BaseModel):
+    """Strict query expansion output used by the Retrieval Agent."""
+
+    subqueries: list[str] = Field(min_length=1, max_length=3)
+    reason: str = ""
+    fallback_used: bool = False
+
+
+class PageImageResult(BaseModel):
+    """Internal-only page image metadata for a final retrieved chunk."""
+
+    chunk_id: UUID
+    document_id: UUID
+    page_number: int
+    storage_ref: str
+    has_table: bool = False
+    has_figure: bool = False
+
+
+class RetrievalAgentResult(BaseModel):
+    """Final Retrieval Agent output consumed by the Orchestrator."""
+
+    chunks: list[RetrievalCandidate]
+    page_images: list[PageImageResult] = Field(default_factory=list)
+    expanded: bool = False
+    top_score: float = 0.0
+    top_relevance_score: float = 0.0
+    retrieval_mode: str = "deterministic"
+    iterations: int = 1
+    fallback_used: bool = False

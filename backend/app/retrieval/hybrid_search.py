@@ -8,6 +8,7 @@ from uuid import UUID
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.tracing import traced
 from app.documents.chunking import (
     EmbeddingClient,
     get_embedding_client,
@@ -129,6 +130,7 @@ def reciprocal_rank_fusion(
     return dict(scores)
 
 
+@traced(agent_name="retrieval_agent")
 async def hybrid_search(
     db: AsyncSession,
     query: str,
