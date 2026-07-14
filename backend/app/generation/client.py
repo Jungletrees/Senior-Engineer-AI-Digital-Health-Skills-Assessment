@@ -91,13 +91,24 @@ def _compose_grounded_answer(payload: GenerationPayload) -> str:
 
 
 def _best_sentence(content: str, query_terms: set[str]) -> str | None:
-    """Pick the context sentence with the most query-term overlap."""
+    """Pick the context sentence with the most query-term overlap.
+
+    Returns None when no sentence speaks to the question at all. Without this, retrieval's
+    nearest-neighbour result is always quoted back, so an off-corpus question ("snake bite")
+    gets a confident, correctly-cited answer about something else entirely. Lexical
+    grounding cannot catch that: the sentence really is verbatim from a source.
+    """
     candidates = [part.strip() for part in re.split(r"(?<=[.!?])\s+|\n+", content) if part.strip()]
-    if not candidates:
+    if not candidates or not query_terms:
         return None
+
+    # One shared generic word is not relevance. "What treats a snake bite?" shares
+    # "treat" with a malaria chunk, which is enough to quote it back with a citation.
+    # A question with several content words must match on more than one of them.
+    minimum_overlap = 2 if len(query_terms) >= 3 else 1
     scored = max(candidates, key=lambda sentence: len(_terms(sentence) & query_terms))
-    if not _terms(scored) & query_terms:
-        scored = candidates[0]
+    if len(_terms(scored) & query_terms) < minimum_overlap:
+        return None
     trimmed = " ".join(scored.split()[:MAX_SENTENCE_WORDS])
     if not trimmed:
         return None
