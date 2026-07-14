@@ -99,5 +99,42 @@
     ],
     "test_results_summary": "BC5 targeted run passed: 6 passed in 2.81s. Full backend run passed: 20 passed, 12 skipped, 4 warnings in 10.25s.",
     "coverage_results": "Chunk size, overlap, structure-aware table splitting, deterministic embeddings, dimension validation, pgvector persistence, and generated content_tsv covered."
+  },
+  {
+    "from_agent": "backend-engineer",
+    "to_agent": "test-engineer",
+    "cycle_id": "BC9-BC11",
+    "status": "implemented",
+    "files_modified": [
+      "backend/app/agents/retrieval_agent.py",
+      "backend/app/agents/orchestrator.py",
+      "backend/app/cache/exact.py",
+      "backend/app/cache/semantic.py",
+      "backend/app/cache/service.py",
+      "backend/app/cache/hygiene.py",
+      "backend/app/retrieval/expand_query.py",
+      "backend/app/retrieval/fetch_page_image.py",
+      "backend/app/retrieval/compaction.py",
+      "backend/app/scheduling/cache_scheduler.py",
+      "backend/app/main.py",
+      "backend/app/settings.py"
+    ],
+    "implementation_summary": "Implemented BC9 Retrieval Agent cascade, BC10 Orchestrator generation assembly, and BC11 exact/semantic cache with cache hygiene scheduler.",
+    "divergences_logged": "ARCHITECTURE (4).md section 18 records internal-only page images, deterministic compaction, BC11 scheduler extension by BC20, cache eligibility gate, and document invalidation by missing source document IDs.",
+    "verification_requirements": "Run BC9, BC10, BC11 targeted pytest suites and full backend pytest."
+  },
+  {
+    "from_agent": "test-engineer",
+    "to_agent": "gitpr-agent",
+    "cycle_id": "BC9-BC11",
+    "status": "verified",
+    "test_commands_executed": [
+      "docker compose -p assessment exec backend pytest app/tests/test_retrieval_agent.py -vv",
+      "docker compose -p assessment exec backend pytest app/tests/test_orchestrator.py -vv",
+      "docker compose -p assessment exec backend pytest app/tests/test_cache.py -vv",
+      "docker compose -p assessment exec backend pytest"
+    ],
+    "test_results_summary": "BC9 targeted run passed: 8 passed in 8.35s. BC10 targeted run passed: 9 passed in 0.82s. BC11 targeted run passed: 9 passed in 7.74s. Full backend run passed: 64 passed, 12 skipped, 4 warnings in 20.89s.",
+    "coverage_results": "Retrieval Agent confidence gate, expansion fallback, trace propagation, Orchestrator compaction/import boundary/payload assembly, and cache hit/miss/eviction/invalidation/prompt-cache behaviors covered."
   }
 ]

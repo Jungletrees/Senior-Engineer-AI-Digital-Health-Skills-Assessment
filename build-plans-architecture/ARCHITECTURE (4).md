@@ -857,7 +857,7 @@ Impl: `sentence-transformers` `CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v
 ```json
 {
   "name": "expand_query",
-  "description": "Only called when hybrid_search's top_score is below RETRIEVAL_AGENT_CONFIDENCE_THRESHOLD. Decomposes a multi-part/ambiguous question into 1-3 targeted sub-queries (e.g., 'compare protocol A and B' -> two sub-queries) or rewrites a vague query into retrieval-friendly phrasing. Each sub-query is re-run through hybrid_search + rerank and results are merged.",
+  "description": "Only called when rerank.top_relevance_score is below RETRIEVAL_AGENT_CONFIDENCE_THRESHOLD. Decomposes a multi-part/ambiguous question into 1-3 targeted sub-queries (e.g., 'compare protocol A and B' -> two sub-queries) or rewrites a vague query into retrieval-friendly phrasing. Each sub-query is re-run through hybrid_search + rerank and results are merged.",
   "input_schema": {
     "type": "object",
     "properties": {
@@ -987,7 +987,12 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 | Ingestion Agent scope | Agentic loop bounded to `{detect_structure, extract_text_ocr_fallback, flag_table_pages}`; `chunk_document`/`embed_batch`/`write_chunks` called deterministically by the controller | Fully agentic 6-tool open loop | Matches the actual decision points (structure/OCR judgment) without agentifying steps that have no judgment to make; keeps latency/cost predictable |
 | Reranker implementation | Local `sentence-transformers` CrossEncoder | Hosted reranker API | No new external dependency or per-query cost at this scale; hosted reranker named as the production alternative if precision needs grow |
 | Citation mechanism | Hand-rolled `<context>` block (kept as default) | `search_result` content blocks | Sound injection defense already in place; `search_result` blocks are a candidate upgrade pending an API/version spike (§16), not yet proven in this project |
-| Retrieval Agent gating | Cascade on low hybrid-search confidence (default 0.55) | Always-agentic retrieval | Keeps the cheap deterministic path as the default; matches §10's cost-optimization philosophy; threshold is a starting default pending golden-set calibration (§7.6) |
+| Retrieval Agent gating | Cascade on low reranker relevance confidence (default 0.55) | Always-agentic retrieval; raw RRF score gating | Keeps the cheap deterministic path as the default while avoiding the known RRF range mismatch; threshold is a starting default pending golden-set calibration (§7.6) |
+| Page-image access | `fetch_page_image` remains internal-only for final reranked chunks | Public page-image route | Page images can contain the same protocol content as text chunks; public source-page viewing needs a separate authorization design, so BC9 exposes no route |
+| Context compaction | Deterministic lexical-overlap sentence selection, restored to document order | LLM-based summarization per chunk | Keeps BC10 deterministic, testable, and cost-free; images supplement compacted text rather than replacing it |
+| Scheduler timing | Lightweight in-process cache scheduler starts at BC11 and is extended by BC20 | Wait until BC20 or create a second scheduler later | Cache TTL/LRU/invalidation are BC11 requirements; one scheduler avoids duplicated scheduling systems when BC20 adds grading/anomaly jobs |
+| Cache write eligibility | Exact and semantic writes take `eligible: bool`, currently true until BC14 | Cache every full-pipeline answer unconditionally | Prevents future filtered/rejected answers from being cached; BC14 only needs to wire `eligible = output_filter_status == "passed"` |
+| Cache invalidation | Delete cache rows whose `source_doc_ids` reference missing document IDs | Track in-place document content-hash changes | The current document lifecycle deletes/reuploads as new IDs, so missing referenced IDs are the concrete stale-answer signal for BC11 |
 | Backend database access implementation | Continue SQLAlchemy async sessions with explicit `text()` SQL for pgvector/full-text retrieval | Rework the implemented backend to raw `asyncpg` before BC7 | The repository has already standardized on SQLAlchemy models, sessions, and Alembic integration through BC6. BC7 still uses inspectable hand-written SQL for `SET LOCAL hnsw.ef_search`, pgvector distance, and full-text search, preserving the architecture's operational requirements without introducing a second DB access paradigm mid-build. |
 
 *(Add rows as further implementation decisions are made — this table is the canonical record of "why," which is explicitly part of what the assessment grades.)*
@@ -1130,6 +1135,7 @@ REDIS_URL=
 EXACT_CACHE_TTL_SECONDS=86400
 SEMANTIC_CACHE_ENABLED=true
 SEMANTIC_CACHE_THRESHOLD=0.92
+SEMANTIC_CACHE_MAX_ROWS=5000
 PROMPT_CACHING_ENABLED=true
 
 # ── Conversation Context Management ──────────────────

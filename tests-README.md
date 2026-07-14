@@ -61,6 +61,21 @@ Docker containers are pre-packaged with all required libraries (`poppler-utils`,
     docker compose -p assessment exec backend pytest app/tests/test_rerank.py -vv -s
     ```
 
+*   **Run BC9 retrieval-agent cascade verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_retrieval_agent.py -vv
+    ```
+
+*   **Run BC10 orchestrator/generation-assembly verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_orchestrator.py -vv
+    ```
+
+*   **Run BC11 exact/semantic-cache verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_cache.py -vv
+    ```
+
 ### 2.2 Running Tests Locally (Without Docker)
 If you are developing locally with a Python virtual environment:
 
@@ -86,15 +101,26 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC6 Ingestion Agent Tests:** `backend/app/tests/test_ingestion_agent.py` verifies the page-scaled ingestion iteration cap, the static tool scope, agent trace logging, table-page image parity with the deterministic path, per-page fallback metadata, and prompt-injection/tool-scope containment. Hosted Anthropic calls are not made in deterministic tests; tests inject a scripted model client.
 - **BC7 Retrieval Tests:** `backend/app/tests/test_retrieval.py` verifies literal Reciprocal Rank Fusion scoring, pgvector vector retrieval, generated-column full-text lexical retrieval, hybrid ordering, vector-only fallback, deleted-document exclusion, query embedding dimension mismatch, and transaction-local `hnsw.ef_search`.
 - **BC8 Rerank Tests:** `backend/app/tests/test_rerank.py` verifies empty-input behavior, sigmoid-bounded score ordering, `top_n` limiting, hosted-provider strategy selection, and explicit failure when a hosted provider is configured without an adapter. Deterministic tests inject fake rerankers and do not download local cross-encoder weights.
+- **BC9 Retrieval Agent Tests:** `backend/app/tests/test_retrieval_agent.py` verifies high-confidence no-expansion, low-confidence expansion, reranker-score gating instead of raw RRF `top_score`, malformed expansion fallback, merge/dedup best fused score retention, iteration-bound deterministic fallback, no public page-image route, and trace-context propagation. Deterministic tests inject fake `hybrid_search`, `rerank`, `expand_query`, and `fetch_page_image` functions; no hosted LLM or model-weight download occurs.
+- **BC10 Orchestrator Tests:** `backend/app/tests/test_orchestrator.py` verifies lexical-overlap compaction, document-order restoration, zero-overlap fallback, static import-boundary enforcement, multimodal image attachment, text-only degradation, context-block payload assembly, retrieval failure propagation, and the explicit BC14 output-filter stub. Tests inject fake retrieval-agent instances and do not call retrieval internals directly.
+- **BC11 Cache Tests:** `backend/app/tests/test_cache.py` verifies query normalization/hash equivalence, exact-cache retrieval/generation skip behavior, semantic threshold hit/miss behavior, hit-count/last-used updates, exact TTL expiry, semantic LRU eviction, document-deletion invalidation, prompt-cache control toggling, and write-eligibility false skips. Semantic-cache tests inject deterministic embedding clients and never call hosted embedding APIs.
 
 ### 2.4 Current Cycle Verification Log
 
-Latest full backend verification for BC7/BC8:
+Latest BC9-BC11 targeted and full backend verification:
 
 ```text
-docker compose -p assessment exec backend pytest
+docker compose -p assessment exec backend pytest app/tests/test_retrieval_agent.py -vv
+8 passed in 8.35s
 
-37 passed, 12 skipped, 4 warnings in 15.06s
+docker compose -p assessment exec backend pytest app/tests/test_orchestrator.py -vv
+9 passed in 0.82s
+
+docker compose -p assessment exec backend pytest app/tests/test_cache.py -vv
+9 passed in 7.74s
+
+docker compose -p assessment exec backend pytest
+64 passed, 12 skipped, 4 warnings in 20.89s
 ```
 
 ---
