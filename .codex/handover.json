@@ -194,5 +194,50 @@
     ],
     "test_results_summary": "Backend compile passed. Frontend deterministic tests passed: 1 test passed, 0 failed. Backend Docker image rebuild failed during pip install with package hash mismatch: expected sha256 edd81538446786ec3b73972543e53bb43bcaf0bfc8ef76cb679fcc390ffe136d, got 2ba3fbf7a9d0eb89c59f58dac6f4623089aa375ac40569fcbad9af9e2b646235.",
     "coverage_results": "BC12-BC15 backend targeted pytest commands remain pending until the image build is repaired and rebuilt."
+  },
+  {
+    "from_agent": "orchestrator",
+    "to_agent": "backend-ml-test-gitpr-agents",
+    "cycle_id": "BC16-BC28",
+    "status": "implemented",
+    "files_modified": [
+      "backend/app/scheduling/singleton.py",
+      "backend/app/scheduling/cache_scheduler.py",
+      "backend/app/scheduling/grading.py",
+      "backend/app/scheduling/anomaly.py",
+      "backend/app/agents/judge_agent.py",
+      "backend/app/security/numeric_grounding.py",
+      "gold_standard/",
+      "backend/alembic/versions/0013_corrective_grading_schema.py",
+      "backend/Dockerfile",
+      "docker-compose.yaml",
+      ".dockerignore",
+      "backend/.dockerignore"
+    ],
+    "implementation_summary": "Completed BC21-BC28 corrective scope: singleton scheduled jobs, cost pricing, rate-limit indexes, semantic-cache embedding-model scoping, exact clinical numeric grounding, reproducible JudgeAgent metadata, gold-standard runner/persistence/reporting/deviation alerts, S3 storage abstraction, health route, and backend image packaging for gold_standard.",
+    "divergences_logged": "Generated-output numerical figures must match cited-source values exactly. Gold manual/CI score runs require corpus fetch/checksum pinning and expected-answer verification before scores are trusted. Playwright was documented but not run because the current frontend package has no Playwright dependency, config, or e2e specs.",
+    "verification_requirements": "Run deterministic backend/frontend suites, targeted corrective suites, backend image build, and health smoke."
+  },
+  {
+    "from_agent": "test-engineer",
+    "to_agent": "gitpr-agent",
+    "cycle_id": "BC16-BC28",
+    "status": "verified",
+    "test_commands_executed": [
+      "python3 -m compileall backend/app gold_standard",
+      "docker compose -p assessment build backend",
+      "docker compose -p assessment exec backend pytest app/tests/test_scheduler_singleton.py -vv",
+      "docker compose -p assessment exec backend pytest app/tests/test_cost.py app/tests/test_numeric_grounding.py app/tests/test_anomaly_detection.py app/tests/test_judge_reproducibility.py -vv",
+      "docker compose -p assessment exec backend pytest app/tests/test_rate_limit_indexes.py -vv",
+      "docker compose -p assessment exec backend pytest app/tests/test_semantic_cache_model_scope.py -vv",
+      "docker compose -p assessment exec backend pytest app/tests/test_gold_standard.py -vv",
+      "docker compose -p assessment exec backend pytest -m golden_set -vv",
+      "docker compose -p assessment exec backend pytest",
+      "npm test --prefix frontend -- --runInBand",
+      "docker compose -p assessment exec backend alembic upgrade head",
+      "docker compose -p assessment exec backend python -c \"import urllib.request; print(urllib.request.urlopen('http://localhost:6100/health', timeout=5).read().decode())\""
+    ],
+    "test_results_summary": "Backend image build passed. Full backend suite passed: 120 passed, 12 skipped, 4 warnings in 41.03s. Frontend deterministic test passed: 1 passed. Backend health smoke returned {\"status\":\"ok\",\"database\":\"ok\"}.",
+    "coverage_results": "BC21-BC28 deterministic coverage includes scheduler singleton lock/release, cost pricing, rate-limit indexes, semantic-cache model scoping/drift cleanup, exact numeric grounding, anomaly cadence, JudgeAgent reproducibility, Chainlit step shim, golden-set marker report, gold eval persistence/skipping/deviation logic, and Docker image packaging for gold_standard."
   }
 ]

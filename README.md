@@ -37,6 +37,40 @@ This repository contains the starter code for your submission. Please read every
    docker compose -p assessment down
    ```
 
+### Testing
+
+Backend and frontend deterministic checks:
+
+```sh
+docker compose -p assessment exec backend pytest
+npm test --prefix frontend -- --runInBand
+```
+
+The backend image includes Poppler and Tesseract for PDF rasterization/OCR. If backend tests reset the database during migration checks, restore the app database with:
+
+```sh
+docker compose -p assessment exec backend alembic upgrade head
+```
+
+Playwright is not scaffolded in the current frontend package. When e2e specs are added, run them with the target frontend URL in the shell, not `.env.example`:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://localhost:3000 npx playwright test --prefix frontend
+```
+
+### Gold-Standard Evaluation
+
+The `gold_standard/` package contains the scheduled regression-eval workflow. Do not commit downloaded PDFs.
+
+```sh
+python -m gold_standard.fetch_corpus
+python -m gold_standard.verify_expected --search
+python -m gold_standard.runner --trigger manual --sample 8
+python -m gold_standard.runner --trigger ci --floor 85
+```
+
+The first corpus fetch pins SHA-256 values into `gold_standard/corpus/corpus_manifest.yaml`; scores should not be trusted until expected answers are verified and `verified:false` questions remain skipped.
+
 ---
 
 ### Submission Guidelines

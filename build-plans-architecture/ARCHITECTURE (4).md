@@ -654,7 +654,7 @@ Exact commands named in the README.
 Everything in §11.1–§11.5 grades behavior **before** send (deterministic checks, golden-set eval, the pre-send output filter, §12.2). Nothing previously looked back at live traffic after the fact to ask "were the answers we actually sent any good" — `response_grade` (§6) closes that, as an extension of the scheduled job already named in §20, not a new service:
 
 - **Every graded row gets a deterministic re-check:** `grounding_check_passed` re-runs the same grounding logic as the pre-send filter (§12.2, §7.5) against the persisted answer and its cited chunks — catching any drift between what passed at send-time and what a stricter or updated grounding check would say now, without needing a live request to test it.
-- **A sample is evaluated by an exclusive Evaluation & Grading Agent using the high-reasoning OPUS model:** a fixed nightly sample (`RESPONSE_GRADING_SAMPLE_SIZE`, §23) of the prior day's `query_audit_log` rows gets a 1–5 rubric score plus a short rationale (`judge_score`, `judge_rationale`). This is executed by a dedicated Evaluation & Grading Agent powered exclusively by the **Claude 3/3.5 Opus** (`OPUS`) model (authorized via a separate, isolated `OPUS_API_KEY` to separate permissions and costs). To ensure absolute grading accuracy, this agent dynamically generates a weighted, multi-criteria marking rubric for the specific query context and then grades each response turn step-by-step against that rubric. Every step of this evaluation, grading, and rubric-generation logic is logged and traced into the `response_grade` and `agent_trace_log` tables for complete auditing.
+- **A sample is evaluated by the production `JudgeAgent` boundary:** a fixed nightly sample (`RESPONSE_GRADING_SAMPLE_SIZE`, §23) of the prior day's `query_audit_log` rows gets a 1–5 rubric score plus a short rationale (`judge_score`, `judge_rationale`). This is executed by `backend/app/agents/judge_agent.py`, the same agent boundary used by gold-standard evaluation. The judge stores `judge_model`, `judge_temperature`, and `judge_rubric_version` on every judged row so trend reports compare only compatible scores. Deterministic tests inject fake judge clients and never call hosted LLMs; local development falls back to a deterministic judge client when hosted credentials are absent.
 - **Why sampled, not exhaustive:** an LLM-judge call on every single response would materially change §10's cost profile for a check that's meant to catch drift and rubric-level quality trends, not gate any individual response — the deterministic grounding re-check runs on every row precisely because it's nearly free; the judge call is sampled because it isn't.
 - **Where this shows up:** `response_grade` joins into `agentops_summary` (§6, §11.5), so "what happened for this response, and was it any good" is one query, not a trace plus a separate lookup — and a sustained drop in `grounding_check_passed` or `judge_score` is exactly the kind of signal §20.1's anomaly detection watches for.
 
@@ -1002,6 +1002,18 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 | Tool-result sanitization | Neutralize context delimiters, role markers, and instruction markers at free-text tool-result boundaries | Blanket sanitize every tool field | Focuses on attacker-controlled text fields while preserving structural IDs, scores, booleans, and bounding boxes |
 | Per-IP rate limit | Add `query_audit_log.client_ip` and enforce `RATE_LIMIT_PER_IP_PER_HOUR=100` | Per-session rate limit only | Covers many-sessions-from-one-IP abuse that a session-only counter cannot detect |
 | Rate-limit counter storage | Reuse `query_audit_log` time-window counts | Redis or a separate counter table | Fits the existing Postgres-first architecture and keeps local/dev infrastructure minimal |
+| Scheduler concurrency under horizontal scaling | Postgres advisory-lock singleton guard per job family | Dedicated scheduler process; leader-election sidecar; Redis lock | Right-sized to a single-DB deployment; no new infrastructure; prevents N-replica duplicate scheduled jobs |
+| `cost_usd` source of truth | `MODEL_PRICING_JSON`, with `NULL` when a model is unpriced | Hardcode rates or silently write 0 | Cost drives §19.1 and anomaly signals; an unpriced model should be visible, not treated as free |
+| Rate-limit count performance | Composite indexes on `(session_id, created_at)` and partial `(client_ip, created_at)` | Leave hot-path counts unindexed | Keeps the Postgres-first rate limiter while avoiding O(table) scans on every chat turn |
+| Semantic-cache model correctness | Store and filter `semantic_cache.embedding_model`; delete stale rows on drift | Compare vectors across embedding models | Cosine similarity across embedding spaces is invalid; scoping is the minimal safe fix |
+| Clinical numeric grounding | Deterministic numeric/dosage check layered after lexical grounding, with exact value+unit matching for generated output | Term-overlap only; hosted NLI model; tolerance-based numeric matching | Term overlap cannot distinguish `5 ml` from `15 ml`; output inferencing of numerical figures must be 100% exact for clinical safety |
+| Anomaly metric cadence | Hourly baselines for request metrics, nightly baselines for grade/gold metrics | One hour-of-day baseline for every metric | Grade-derived signals are produced nightly, so an hourly bucket has no meaningful data |
+| Judge reproducibility | `JudgeAgent` pins model, temperature 0, and rubric version; rows store the triple | Unpinned judge calls | Trend reports compare the system, not model/rubric drift; version changes are baseline resets |
+| Chainlit step instrumentation | Context-guarded no-op shim | Trust `cl.step` no-ops outside Chainlit context | Removes pytest/runtime dependence on undocumented third-party behavior |
+| Docker reranker dependency strategy | Pin CPU-only torch from the official PyTorch CPU wheel index before `sentence-transformers` | Let pip resolve the CUDA dependency chain | Preserves the local CrossEncoder architecture while avoiding huge CUDA wheel downloads that failed the backend image build |
+| Gold corpus and rubric | Three WHO/UNICEF PDFs with TOFU checksums; weighted numeric-heavy rubric with refusal cases | Synthetic fixtures or unweighted pass/fail | Measures the document shape production serves and weights clinical dosing/refusal failures appropriately |
+| Gold eval data path | Call real `/chat` and read lineage from `query_audit_log`/`chat_messages`/`chunks` | Parallel eval harness | Keeps scheduled quality evaluation on the same production lineage path as live traffic |
+| Gold deviation alerting | Dual absolute-drop/z-score, per-category and overall, rubric/corpus/judge compatible baselines | Single overall z-score | Dosing or refusal regressions must not hide behind a stable aggregate score |
 
 *(Add rows as further implementation decisions are made — this table is the canonical record of "why," which is explicitly part of what the assessment grades.)*
 
@@ -1021,12 +1033,31 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 - **Observability:** structured JSON logging to CloudWatch Logs (or equivalent); `query_audit_log` and, new, `agent_trace_log` (§6) as the primary application-level metrics source (latency, cache-hit rate, cost, groundedness pass-rate, agentic-vs-deterministic retrieval split); a basic alert on elevated error rate or p95 latency breach.
 - **Cost note:** pgvector on RDS avoids the "managed vector database has a minimum monthly floor" problem some dedicated vector databases carry.
 
+### 19.1 Observability Targets, Alerts, and Owners
+
+| Metric | Source | Target | Alert condition | Owner |
+|---|---|---|---|---|
+| p95 chat latency | `query_audit_log.latency_ms` | < 3000ms | p95 breaches target for 3 consecutive 5-minute windows | Backend on-call |
+| Error rate | ASGI/CloudWatch 5xx count | < 1% | > 2% over a 5-minute window | Backend on-call |
+| Cache hit rate | `query_audit_log.cache_status` | > 30% combined exact + semantic | sustained < 15% over 1 hour | Backend on-call |
+| Groundedness pass rate | `query_audit_log.grounded`, `response_grade.grounding_check_passed` | > 95% | < 90% over 1 hour or nightly grade regression | ML on-call |
+| Output filter rate | `query_audit_log.output_filter_status` | < 5% filtered | > 15% over 1 hour | ML on-call |
+| Agentic expansion rate | `query_audit_log.retrieval_mode` | 10-30% informational | > 60% for 1 day | ML on-call |
+| Cost per chat turn | `query_audit_log.cost_usd` | verify at deploy from `MODEL_PRICING_JSON` | z-score anomaly or unpriced model warning | Backend on-call |
+| Gold-eval overall score | `gold_eval_run.overall_score` | >= 90 | >= 5-point drop vs compatible baseline or z <= -3 | ML on-call |
+| Gold-eval dosing score | `gold_eval_result` category `dosing` | >= 95 | any drop >= 3 points vs compatible baseline | ML on-call |
+| Gold-eval refusal score | `gold_eval_result` category `refusal` | >= 95 | any single-run drop or fabrication regression | ML on-call |
+
 ---
 
 ## 20. Additional Service Layers (Bonus)
 
 - **Caching** — full detail at §9.
 - **Scheduling** — a lightweight scheduled job (APScheduler in-process, or a cron-triggered endpoint) for: expiring stale `exact_cache` entries past TTL, re-embedding documents if the embedding model configuration changes, and **(new)** re-running structure detection/rasterization for previously-ingested documents if the table-detection heuristic or `PAGE_IMAGE_DPI` setting changes — detectable directly from a version/config marker stored on `documents.metadata`, same pattern as the existing embedding-model-mismatch check.
+
+### 20.1 Corrective Anomaly Detection
+
+Scheduled jobs run under a Postgres advisory-lock singleton guard so horizontal replicas do not duplicate work. Request-derived metrics (`cost_usd`, `latency_ms`, `cache_hit_rate`, `output_filter_rate`, `agentic_expanded_rate`) use an hourly, hour-of-day baseline over `ANOMALY_DETECTION_BASELINE_LOOKBACK_DAYS`. Grade-derived metrics (`grounded_false_rate`, `judge_score_mean`) and gold-eval metrics use a nightly baseline, grouped by compatible judge/rubric/corpus metadata where applicable. Buckets with fewer than three prior comparable observations, or zero standard deviation, are skipped as insufficient baseline rather than flagged. A row is inserted into `anomaly_flag` only when the configured z-score threshold is crossed or gold-eval absolute-drop rules fire.
 
 ---
 
@@ -1171,4 +1202,30 @@ AWS_REGION=
 # ── Scheduling ─────────────────────────────────────────
 ENABLE_SCHEDULED_JOBS=true
 CACHE_EVICTION_CRON=0 * * * *
+SCHEDULER_LEADER_LOCK_KEY=91537
+GRADING_JOB_CRON=0 2 * * *
+RESPONSE_GRADING_SAMPLE_SIZE=50
+ANOMALY_DETECTION_ZSCORE_THRESHOLD=3.0
+ANOMALY_DETECTION_BASELINE_LOOKBACK_DAYS=14
+MODEL_PRICING_JSON={"claude-sonnet-5":{"input_per_mtok":3.0,"output_per_mtok":15.0},"claude-haiku-4-5":{"input_per_mtok":0.8,"output_per_mtok":4.0}}
+GROUNDING_NUMERIC_CHECK_ENABLED=true
+GROUNDING_NUMERIC_TOLERANCE=0.0      # generated clinical numeric claims must match cited-source values exactly
+GROUNDING_TSVECTOR_CONFIG=english
+JUDGE_MODEL=claude-haiku-4-5
+JUDGE_TEMPERATURE=0.0
+JUDGE_RUBRIC_VERSION=1
+GOLD_CORPUS_DIR=./gold_standard/corpus/files
+GOLD_QUESTIONS_PATH=./gold_standard/questions.yaml
+GOLD_RUBRIC_PATH=./gold_standard/rubric.yaml
+GOLD_EVAL_JUDGE_MODEL=
+GOLD_EVAL_CONCURRENCY=2
+GOLD_EVAL_REPORT_PATH=./gold_standard/gold_eval_report.md
+GOLD_EVAL_CRON=0 3 * * *
+GOLD_EVAL_SAMPLE_SIZE=
+GOLD_EVAL_BASELINE_LOOKBACK_RUNS=14
+GOLD_EVAL_DEVIATION_ABS_DROP=5.0
+GOLD_EVAL_DEVIATION_ZSCORE=3.0
+GOLD_EVAL_ALERT_ON_VERSION_CHANGE=false
+GOLD_CHAT_URL=http://localhost:6100/api/v1/chat
+GOLD_CHAT_AUTH=
 ```

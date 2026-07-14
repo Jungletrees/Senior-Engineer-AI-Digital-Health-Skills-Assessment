@@ -102,6 +102,19 @@ Docker containers are pre-packaged with all required libraries (`poppler-utils`,
     docker compose -p assessment exec backend pytest app/tests/test_chat.py -vv
     ```
 
+*   **Run BC21-BC28 corrective verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_scheduler_singleton.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_cost.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_rate_limit_indexes.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_semantic_cache_model_scope.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_numeric_grounding.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_anomaly_detection.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_judge_reproducibility.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_gold_standard.py -vv
+    docker compose -p assessment exec backend pytest -m golden_set -vv
+    ```
+
 ### 2.2 Running Tests Locally (Without Docker)
 If you are developing locally with a Python virtual environment:
 
@@ -134,6 +147,7 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC13 Frontend/Upload Config Tests:** `backend/app/tests/test_upload_config.py` verifies the settings-derived upload-limits endpoint. `npm test --prefix frontend -- --runInBand` runs deterministic Node tests for the `/documents` page source, frontend fetch/XHR helpers, upload validation, upload progress, mocked polling transitions, failed status rendering support, optimistic delete, rollback, and auth header inclusion.
 - **BC14 Guardrail Tests:** `backend/app/tests/test_guardrails.py` verifies grounded/fabricated answers, leak canaries, PII provenance, empty-answer filtering, tool-result sanitizer delimiter defense, filtered-response cache blocking, input-validation audit rejection, security headers, and configured CORS. No hosted LLMs, hosted embeddings, hosted auth providers, or reranker downloads are used.
 - **BC15 Auth/Rate-Limit Tests:** `backend/app/tests/test_auth.py` and `backend/app/tests/test_rate_limit.py` verify JWT issuance/verification, document-route auth rejection/acceptance, anonymous-chat flag behavior, per-session limits, per-IP limits via `query_audit_log.client_ip`, `Retry-After`, and rate-limit-before-cache behavior. Rate-limit tests use DB fixtures rather than external counters.
+- **BC21-BC28 Corrective Tests:** Scheduler singleton tests verify Postgres advisory-lock execution and lock release. Cost/index/cache tests cover `MODEL_PRICING_JSON`, rate-limit indexes, and semantic-cache `embedding_model` scoping/drift cleanup. Numeric grounding tests enforce exact clinical numeric output matching, including 5 ml pass / 15 ml fail and tolerance ignored for generated answers. Anomaly/Judge/Gold tests cover cadence split, reproducible `JudgeAgent` metadata, SQLAlchemy-backed gold eval persistence, verified-question skipping, and rubric/deviation math. Deterministic tests inject fake chat and fake judge clients and never call hosted LLMs.
 
 ### 2.4 Current Cycle Verification Log
 
@@ -153,7 +167,7 @@ docker compose -p assessment exec backend pytest
 64 passed, 12 skipped, 4 warnings in 20.89s
 ```
 
-BC12-BC15 implementation verification status:
+Historical BC12-BC15 image-build issue, now superseded by the BC21-BC28 rebuild:
 
 ```text
 python3 -m compileall backend/app
@@ -167,13 +181,52 @@ npm test --prefix frontend -- --runInBand
 # duration_ms 1696.303333
 
 docker compose -p assessment up -d --build backend frontend
-failed during backend image build:
-ERROR: THESE PACKAGES DO NOT MATCH THE HASHES FROM THE REQUIREMENTS FILE.
-Expected sha256 edd81538446786ec3b73972543e53bb43bcaf0bfc8ef76cb679fcc390ffe136d
-Got        2ba3fbf7a9d0eb89c59f58dac6f4623089aa375ac40569fcbad9af9e2b646235
+previously failed during backend image build on a pip wheel hash/download error.
+The current backend image build is repaired by using no pip cache mount and a CPU-only torch wheel before sentence-transformers.
 ```
 
-Backend targeted BC12-BC15 pytest commands remain pending until the backend image build is repaired and rebuilt.
+BC21-BC28 corrective verification status:
+
+```text
+docker compose -p assessment build backend
+passed; backend image includes CPU-only torch and gold_standard package
+
+docker compose -p assessment exec backend pytest app/tests/test_scheduler_singleton.py -vv
+3 passed in 2.60s
+
+docker compose -p assessment exec backend pytest app/tests/test_cost.py app/tests/test_numeric_grounding.py app/tests/test_anomaly_detection.py app/tests/test_judge_reproducibility.py -vv
+15 passed in 0.83s
+
+docker compose -p assessment exec backend pytest app/tests/test_rate_limit_indexes.py -vv
+1 passed in 1.17s
+
+docker compose -p assessment exec backend pytest app/tests/test_semantic_cache_model_scope.py -vv
+2 passed in 2.54s
+
+docker compose -p assessment exec backend pytest app/tests/test_gold_standard.py -vv
+4 passed in 1.55s
+
+docker compose -p assessment exec backend pytest -m golden_set -vv
+1 passed, 131 deselected, 1 warning in 1.81s
+
+docker compose -p assessment exec backend pytest
+120 passed, 12 skipped, 4 warnings in 41.03s
+
+npm test --prefix frontend -- --runInBand
+1 passed
+
+docker compose -p assessment exec backend python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:6100/health', timeout=5).read().decode())"
+{"status":"ok","database":"ok"}
+```
+
+Gold-eval manual/CI floor commands require the corpus PDFs to be fetched, checksum-pinned, indexed, and human-verified first:
+
+```sh
+python -m gold_standard.fetch_corpus
+python -m gold_standard.verify_expected --search
+python -m gold_standard.runner --trigger manual --sample 8
+python -m gold_standard.runner --trigger ci --floor 85
+```
 
 ---
 
@@ -200,7 +253,7 @@ To run deterministic frontend tests:
 
 ## 4. End-to-End Integration Tests (`Playwright`)
 
-Playwright tests execute in a real headless browser environment to ensure backend services, relational databases, and frontend components communicate perfectly.
+Playwright tests execute in a real headless browser environment to ensure backend services, relational databases, and frontend components communicate correctly. The current frontend package does not yet include a Playwright dependency, config file, or e2e spec; treat the commands below as the intended smoke-test entry points once that scaffold is added.
 
 ### 4.1 Prerequisites
 Before running E2E tests, ensure the local Docker containers are running and healthy:
@@ -211,6 +264,12 @@ docker compose -p assessment up -d --build
 Make sure Playwright browsers are installed locally (or inside your execution host):
 ```sh
 npx playwright install --prefix frontend
+```
+
+Set `PLAYWRIGHT_BASE_URL` in the shell when running specs against a non-default frontend URL:
+
+```sh
+PLAYWRIGHT_BASE_URL=http://localhost:3000 npx playwright test --prefix frontend
 ```
 
 ### 4.2 Running Playwright Tests
