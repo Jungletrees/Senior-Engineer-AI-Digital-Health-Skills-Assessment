@@ -17,7 +17,12 @@ from app.agents.orchestrator import RetrievalUnavailableError
 from app.api.v1.chat import router as chat_router
 from app.cache.exact import lookup_exact_cache, write_exact_cache
 from app.cache.semantic import write_semantic_cache
-from app.chat.response_presenter import NO_ANSWER_MESSAGE, RETRIEVAL_UNAVAILABLE_MESSAGE
+from app.chat.response_presenter import (
+    DOCUMENT_PREPARING_MESSAGE,
+    NO_ANSWER_MESSAGE,
+    RETRIEVAL_UNAVAILABLE_MESSAGE,
+    UPLOAD_FIRST_MESSAGE,
+)
 from app.core.errors import AppError, app_error_handler
 from app.database import DATABASE_URL, get_db
 from app.generation.client import GenerationResult
@@ -225,7 +230,25 @@ async def test_empty_corpus_returns_upload_first_without_retrieval(migrated_sess
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post("/api/v1/chat", json={"session_id": str(session_id), "message": "malaria"})
 
-    assert "Upload and index" in response.json()["answer"]
+    assert response.json()["answer"] == UPLOAD_FIRST_MESSAGE
+    assert retrieval.calls == 0
+    assert generation.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_document_still_processing_is_not_told_to_upload_first(migrated_session: AsyncSession) -> None:
+    """A PDF that is still being prepared is not the same as having no PDF at all."""
+    await _insert_processing_document(migrated_session)
+    session_id = await _insert_session(migrated_session)
+    generation = FakeGenerationClient()
+    retrieval = FakeRetrievalAgent(None)
+    app = _chat_app(migrated_session, retrieval, generation)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/v1/chat", json={"session_id": str(session_id), "message": "malaria"})
+
+    assert response.json()["answer"] == DOCUMENT_PREPARING_MESSAGE
+    assert response.json()["answer"] != UPLOAD_FIRST_MESSAGE
     assert retrieval.calls == 0
     assert generation.calls == 0
 
@@ -431,6 +454,23 @@ async def _insert_indexed_document(session: AsyncSession):
                 """
                 INSERT INTO documents (filename, content_hash, status, page_count)
                 VALUES ('source.pdf', :hash, 'indexed', 1)
+                RETURNING id
+                """
+            ),
+            {"hash": uuid4().hex + uuid4().hex},
+        )
+    ).mappings().one()
+    await session.commit()
+    return row["id"]
+
+
+async def _insert_processing_document(session: AsyncSession):
+    row = (
+        await session.execute(
+            text(
+                """
+                INSERT INTO documents (filename, content_hash, status)
+                VALUES ('pending.pdf', :hash, 'processing')
                 RETURNING id
                 """
             ),

@@ -20,7 +20,7 @@ const limits = {
 test("/documents page contains dropzone and empty state copy", async () => {
   const source = await readFile(new URL("../src/app/documents/page.tsx", import.meta.url), "utf8");
   assert.match(source, /documents-dropzone/);
-  assert.match(source, /No documents uploaded/);
+  assert.match(source, /No documents yet/);
 });
 
 test("upload limits drive MIME and size validation before network", () => {

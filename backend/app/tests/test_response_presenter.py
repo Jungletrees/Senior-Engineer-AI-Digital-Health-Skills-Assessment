@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import re
 from uuid import uuid4
 
 from app.chat.response_presenter import (
+    DOCUMENT_PREPARING_MESSAGE,
     NO_ANSWER_MESSAGE,
+    RETRIEVAL_UNAVAILABLE_MESSAGE,
+    UPLOAD_FIRST_MESSAGE,
     build_citation_candidates,
     document_display_title,
     is_no_answer,
     present_answer,
 )
 from app.retrieval.models import RetrievalCandidate
+from app.security.guardrails import SAFE_FALLBACK_MESSAGE
 
 
 def _chunk(filename: str, page: int, content: str) -> RetrievalCandidate:
@@ -181,3 +186,32 @@ def test_is_no_answer_recognizes_model_phrasings() -> None:
     assert is_no_answer("I could not find that in the uploaded documents.") is True
     assert is_no_answer("The documents do not mention that.") is True
     assert is_no_answer("The child dose is 5 ml.") is False
+
+
+def test_user_facing_copy_carries_no_retrieval_jargon() -> None:
+    """These strings are read by people who just want answers from their own documents."""
+    jargon = re.compile(
+        r"\b(RAG|chunks?|corpus|grounded|grounding|retrieval|reranker|embedding|ingestion|indexed|index)\b",
+        re.IGNORECASE,
+    )
+    for message in (
+        NO_ANSWER_MESSAGE,
+        RETRIEVAL_UNAVAILABLE_MESSAGE,
+        UPLOAD_FIRST_MESSAGE,
+        DOCUMENT_PREPARING_MESSAGE,
+        SAFE_FALLBACK_MESSAGE,
+    ):
+        assert jargon.search(message) is None, f"user-facing copy contains jargon: {message}"
+
+
+def test_empty_corpus_message_politely_asks_for_a_pdf() -> None:
+    assert "please upload a pdf" in UPLOAD_FIRST_MESSAGE.lower()
+    # A document that is merely still processing must not be told to upload one.
+    assert "upload" not in DOCUMENT_PREPARING_MESSAGE.lower()
+
+
+def test_no_answer_and_retrieval_failure_stay_distinguishable() -> None:
+    """"Cannot search right now" must not be confused with "not in your documents"."""
+    assert NO_ANSWER_MESSAGE != RETRIEVAL_UNAVAILABLE_MESSAGE
+    assert "could not find" in NO_ANSWER_MESSAGE.lower()
+    assert "could not search" in RETRIEVAL_UNAVAILABLE_MESSAGE.lower()

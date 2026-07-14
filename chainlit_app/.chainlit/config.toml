@@ -30,13 +30,23 @@ enabled = false
 allowed_executables = ["npx", "uvx"]
 
 [UI]
-name = "Last Mile Health RAG Chat"
+name = "Ask your documents"
 default_theme = "light"
 layout = "wide"
 default_sidebar_state = "open"
-description = "Document-grounded chat over indexed clinical PDFs."
+description = "Ask questions about the documents you upload, with sources on every answer."
 cot = "hidden"
 custom_css = "/public/rag-theme.css"
+
+# The "+ Upload PDF" button in the chat header. This is Chainlit's own documented
+# header-link component, so it renders on every viewport (verified at 375/768/1024/1440)
+# and touches no internal Chainlit DOM. It opens the dedicated upload page, which is the
+# single place documents are added for either chat surface.
+[[UI.header_links]]
+name = "Upload PDF"
+display_name = "Upload PDF"
+icon_url = "/public/upload-icon.svg"
+url = "http://localhost:3000/documents"
 
 [meta]
 generated_by = "2.5.5"

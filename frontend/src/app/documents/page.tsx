@@ -30,6 +30,12 @@ const EMPTY_LIMITS: UploadLimits = {
   allowed_mime_types: [],
 };
 
+const STATUS_LABELS: Record<DocumentRow["status"], string> = {
+  processing: "Preparing",
+  indexed: "Ready",
+  failed: "Failed",
+};
+
 export default function DocumentsPage() {
   const [limits, setLimits] = useState<UploadLimits>(EMPTY_LIMITS);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
@@ -110,13 +116,11 @@ export default function DocumentsPage() {
   }
 
   return (
-    <main className="documents-shell">
-      <section className="documents-header">
-        <div>
-          <h1>Documents</h1>
-          <p>Upload PDFs for indexing before asking document-grounded chat questions.</p>
-        </div>
-      </section>
+    <section className="documents-shell" aria-label="Document manager">
+      <header className="documents-header">
+        <h1>My documents</h1>
+        <p>Add a PDF here, then ask questions about it in chat.</p>
+      </header>
 
       <label
         className={`documents-dropzone${dragActive ? " is-active" : ""}`}
@@ -146,8 +150,8 @@ export default function DocumentsPage() {
       <section className="documents-table-band">
         {documents.length === 0 ? (
           <div className="documents-empty">
-            <h2>No documents uploaded</h2>
-            <p>Upload a PDF before starting chat.</p>
+            <h2>No documents yet</h2>
+            <p>Add a PDF above to start asking questions about it.</p>
           </div>
         ) : (
           <table className="documents-table">
@@ -167,7 +171,10 @@ export default function DocumentsPage() {
                   <td>{document.uploaded_at ? new Date(document.uploaded_at).toLocaleString() : "Pending"}</td>
                   <td>{document.page_count ?? "..."}</td>
                   <td>
-                    <span className={`status-pill status-${document.status}`}>{document.status}</span>
+                    {/* The API status values are technical; the user sees plain words. */}
+                    <span className={`status-pill status-${document.status}`}>
+                      {STATUS_LABELS[document.status]}
+                    </span>
                   </td>
                   <td>
                     <button type="button" onClick={() => deleteDocument(document)}>
@@ -180,6 +187,6 @@ export default function DocumentsPage() {
           </table>
         )}
       </section>
-    </main>
+    </section>
   );
 }

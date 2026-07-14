@@ -23,16 +23,25 @@ from uuid import UUID
 
 from app.retrieval.models import RetrievalCandidate
 
+# User-facing copy. These are read by people who just want answers from their own
+# documents, so they must never mention retrieval, chunks, indexing, or grounding.
 NO_ANSWER_MESSAGE = (
-    "I could not find that in the uploaded documents. "
-    "Try uploading the relevant guidance or asking about a specific section."
+    "I could not find that in your documents. "
+    "Try uploading the document that covers it, or ask about a specific section."
 )
-RETRIEVAL_UNAVAILABLE_MESSAGE = "I could not search the uploaded documents right now. Please try again."
+RETRIEVAL_UNAVAILABLE_MESSAGE = "I could not search your documents right now. Please try again."
+# Nothing has been uploaded yet, so there is nothing to answer from. Ask, do not scold.
 UPLOAD_FIRST_MESSAGE = (
-    "Upload and index a PDF first, then ask a question and I will answer from your documents."
+    "I do not have any documents to look in yet. "
+    "Please upload a PDF first, then ask your question and I will answer from it."
+)
+# A PDF was uploaded but is not ready to search yet. Telling this user to "upload a PDF
+# first" would be wrong, so the two cases are kept apart.
+DOCUMENT_PREPARING_MESSAGE = (
+    "Your document is still being prepared. Please try again in a moment."
 )
 
-REFERENCES_HEADING = "References"
+REFERENCES_HEADING = "Sources"
 
 _SUPERSCRIPT_DIGITS = str.maketrans("0123456789", "⁰¹²³⁴⁵⁶⁷⁸⁹")
 

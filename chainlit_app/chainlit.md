@@ -1,5 +1,7 @@
-# Last Mile Health RAG Chat
+# Ask your documents
 
-Ask questions about uploaded and indexed PDF guidance. Answers are generated through the FastAPI RAG pipeline and include citation notes when retrieved document chunks support the response.
+Ask a question about the documents you have uploaded. Every answer comes from those documents, and shows you the page each fact came from.
 
-Use the document manager at http://localhost:3000/documents to upload PDFs before asking document-specific questions.
+If a document does not cover your question, you will be told so rather than given a guess.
+
+No documents yet? Use the **+ Upload PDF** button at the top of the page, or open the [document page](http://localhost:3000/documents) to add one.

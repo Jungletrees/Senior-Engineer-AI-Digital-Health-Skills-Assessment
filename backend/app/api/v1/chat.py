@@ -21,6 +21,7 @@ from app.cache.exact import CacheHit
 from app.cache.semantic import lookup_semantic_cache, write_semantic_cache
 from app.chat.conversation import load_conversation_context
 from app.chat.response_presenter import (
+    DOCUMENT_PREPARING_MESSAGE,
     NO_ANSWER_MESSAGE,
     REFERENCES_HEADING,
     RETRIEVAL_UNAVAILABLE_MESSAGE,
@@ -135,15 +136,17 @@ async def chat(
             cache_hit.source_chunk_ids,
         )
 
-    indexed_count = await _indexed_document_count(db)
-    if indexed_count == 0:
+    counts = await _document_status_counts(db)
+    if counts["indexed"] == 0:
+        # A document that is still being prepared is not the same as no document at all.
+        message = DOCUMENT_PREPARING_MESSAGE if counts["processing"] else UPLOAD_FIRST_MESSAGE
         return await _finalize_no_retrieval(
             db,
             started,
             session_id,
             audit_id,
             payload.message,
-            UPLOAD_FIRST_MESSAGE,
+            message,
             cache_status="miss",
         )
 
@@ -518,8 +521,20 @@ async def _finalize_audit(db: AsyncSession, audit_id: UUID, **fields: Any) -> No
     )
 
 
-async def _indexed_document_count(db: AsyncSession) -> int:
-    return int((await db.execute(text("SELECT count(*) FROM documents WHERE status = 'indexed'"))).scalar_one())
+async def _document_status_counts(db: AsyncSession) -> dict[str, int]:
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT
+                    count(*) FILTER (WHERE status = 'indexed')    AS indexed,
+                    count(*) FILTER (WHERE status = 'processing') AS processing
+                FROM documents
+                """
+            )
+        )
+    ).mappings().one()
+    return {"indexed": int(row["indexed"]), "processing": int(row["processing"])}
 
 
 async def _latest_assistant_answer(db: AsyncSession, session_id: UUID) -> dict[str, Any] | None:

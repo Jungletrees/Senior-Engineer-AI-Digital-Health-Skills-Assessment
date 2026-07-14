@@ -18,8 +18,8 @@ from app.security.numeric_grounding import numeric_claims_supported
 from app.settings import settings
 
 SAFE_FALLBACK_MESSAGE = (
-    "I wasn't able to verify that answer against your documents closely enough to share it. "
-    "Please rephrase the question or check the source document directly."
+    "I could not confirm that answer against your documents, so I would rather not give it. "
+    "Try rephrasing your question."
 )
 
 LEAK_CANARIES = (
