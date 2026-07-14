@@ -248,10 +248,29 @@ test.describe("upload entry point and layout integrity", () => {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       await page.goto(chainlitBaseURL);
 
-      // Chainlit's own [[UI.header_links]] component, not injected DOM.
-      const upload = page.getByRole("link", { name: /Upload PDF/i });
+      // Inside the composer frame, bottom-left, matching the Next.js surface.
+      const upload = page.locator("#rag-upload-btn");
       await expect(upload).toBeVisible({ timeout: 30_000 });
       await expect(upload).toHaveAttribute("href", /\/documents$/);
+
+      const composer = page.locator("#message-composer");
+      const composerBox = await composer.boundingBox();
+      const uploadBox = await upload.boundingBox();
+      expect(composerBox).not.toBeNull();
+      expect(uploadBox).not.toBeNull();
+
+      // Contained within the input frame, not floating outside it.
+      expect(uploadBox!.x).toBeGreaterThanOrEqual(composerBox!.x - 1);
+      expect(uploadBox!.y).toBeGreaterThanOrEqual(composerBox!.y - 1);
+      expect(uploadBox!.x + uploadBox!.width).toBeLessThanOrEqual(
+        composerBox!.x + composerBox!.width + 1,
+      );
+      expect(uploadBox!.y + uploadBox!.height).toBeLessThanOrEqual(
+        composerBox!.y + composerBox!.height + 1,
+      );
+      // Bottom-left: in the left half, and in the lower half, of the frame.
+      expect(uploadBox!.x - composerBox!.x).toBeLessThan(composerBox!.width / 2);
+      expect(uploadBox!.y - composerBox!.y).toBeGreaterThan(composerBox!.height / 2 - 20);
 
       const overflow = await page.evaluate(
         () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

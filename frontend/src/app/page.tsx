@@ -140,18 +140,11 @@ export default function ChatPage() {
         </div>
       ) : null}
 
+      {/* The composer is one framed surface: the textarea sits on top, and the controls
+          sit inside that same frame along its bottom edge — "+" at the left, Send at the
+          right. The textarea itself is borderless so the frame reads as the input. */}
       <form className="chat-composer" onSubmit={submitQuestion}>
         <label htmlFor="chat-input">Ask a question about your documents</label>
-        {/* Always reachable from the composer, at every viewport, so a user who has
-            nothing indexed yet is one click from the upload page. */}
-        <Link
-          href="/documents"
-          className="composer-upload"
-          title="Add a document"
-          aria-label="Add a document"
-        >
-          <span aria-hidden="true">+</span>
-        </Link>
         <textarea
           id="chat-input"
           value={input}
@@ -165,9 +158,19 @@ export default function ChatPage() {
           placeholder="Ask a question about your documents..."
           rows={2}
         />
-        <button type="submit" disabled={isSending || !input.trim()}>
-          {isSending ? "Sending…" : "Send"}
-        </button>
+        <div className="composer-actions">
+          <Link
+            href="/documents"
+            className="composer-upload"
+            title="Add a document"
+            aria-label="Add a document"
+          >
+            <span aria-hidden="true">+</span>
+          </Link>
+          <button type="submit" disabled={isSending || !input.trim()}>
+            {isSending ? "Sending…" : "Send"}
+          </button>
+        </div>
       </form>
     </section>
   );

@@ -42,10 +42,12 @@ class Settings(BaseSettings):
     max_output_tokens_summary: int = 200
     anonymous_chat_allowed: bool = True
     chainlit_auth_secret: str | None = None
-    max_pdf_size_mb: int = 20
-    max_pdf_pages: int = 300
+    max_pdf_size_mb: int = 65
+    max_pdf_pages: int = 700
     allowed_mime_types: str = "application/pdf"
-    request_body_size_limit_bytes: int = 25 * 1024 * 1024
+    # Must stay above max_pdf_size_mb plus multipart overhead, or the middleware
+    # rejects a legal upload before the size check can produce a useful error.
+    request_body_size_limit_bytes: int = 72 * 1024 * 1024
     cors_allowed_origins: str = "http://localhost:3000,http://localhost:8000"
     jwt_secret: str = "dev-only-change-me"
     session_token_expiry_minutes: int = 60

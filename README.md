@@ -235,6 +235,19 @@ Do not trust gold scores until the corpus PDFs have been fetched, SHA-256 hashes
 
 ## Security Posture
 
+### API keys
+
+Provider keys are the highest-value secret here — they are spendable. Full posture in [DEPLOYMENT.md § Secrets and API Key Management](./DEPLOYMENT.md); the rules that shape the code:
+
+- **Only the backend ever holds a provider key.** The browser never sees one, and no key exists in any frontend bundle (`frontend/.env.local.example` holds a base URL and nothing else). Both chat surfaces call `/api/v1/chat`; the backend makes every provider call server-side.
+- **No key may be prefixed `NEXT_PUBLIC_`.** Next.js inlines those into the client bundle at build time, publishing them to every visitor. That would be an incident, not a bug.
+- Keys are read from the environment only. They are never written to the database, never returned by any route, and never logged — provider-selection logs name the *variable*, never the value (`generation.provider_key_missing key=ANTHROPIC_API_KEY fallback=deterministic`).
+- **Placeholders degrade safely.** `your-anthropic-api-key-here` is detected as *absent*, so an unedited `.env` falls back to the local path instead of 401-ing on every chat turn.
+- **A missing key degrades; it never crashes.** Without `ANTHROPIC_API_KEY` answers come from a local extractive fallback; without `OPENAI_API_KEY` embeddings are a hash-based fallback and **semantic search is effectively off**. Both are documented in `.env.example`, because a reviewer judging answer quality needs to know which path they are on.
+- In production, keys come from Secrets Manager/SSM injected at task start — never baked into an image, never a committed `.env` — with per-environment keys, scheduled rotation, a provider-side spend cap, and CI secret scanning.
+
+### Everything else
+
 - No real secrets are committed; `.env.example` uses placeholders.
 - Document-management endpoints are public for the local reviewer stack; optional JWT session tokens are retained only for closed-chat mode when anonymous chat is disabled.
 - Upload validation checks PDF magic bytes, parsed page count, MIME allow-list, and size limits before persistence.

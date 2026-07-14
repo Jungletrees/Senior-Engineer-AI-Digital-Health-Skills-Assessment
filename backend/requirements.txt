@@ -65,3 +65,4 @@ pytesseract==0.3.13
 Pillow==10.4.0
 requests==2.32.5
 boto3==1.40.70
+anthropic==0.75.0

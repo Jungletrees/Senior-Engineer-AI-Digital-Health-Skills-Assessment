@@ -153,11 +153,11 @@ test("composer keeps a + upload entry point at every viewport", async () => {
   assert.match(source, /href="\/documents"/);
   assert.match(source, /aria-label="Add a document"/);
 
-  // It lives inside the composer grid, so it is present at desktop and mobile alike.
+  // It sits inside the composer frame, in the actions row along the bottom edge, with
+  // Send at the far right. Same layout at every breakpoint.
+  assert.match(source, /className="composer-actions"/);
   assert.match(css, /\.composer-upload \{/);
-  assert.match(css, /grid-template-columns: auto minmax\(0, 1fr\) auto;/);
-  // At 375px Send drops to its own row instead of colliding with the upload button.
-  assert.match(css, /\.chat-composer button\[type="submit"\] \{\s*grid-column: 1 \/ -1;/);
+  assert.match(css, /\.composer-actions \{[^}]*justify-content: space-between;/s);
 });
 
 test("app shell exposes an accessible hamburger menu", async () => {

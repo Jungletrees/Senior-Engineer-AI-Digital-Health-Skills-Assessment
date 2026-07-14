@@ -405,28 +405,42 @@ body {
   cursor: not-allowed;
 }
 
+/* The composer is a single framed surface. The textarea has no border of its own, and the
+   controls sit inside the frame along its bottom edge. */
 .chat-composer {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: end;
-  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 10px 8px;
   border: 1px solid var(--line-strong);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
 }
 
-/* The upload affordance stays in the composer at every breakpoint. */
+.chat-composer:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(31, 111, 91, 0.12);
+}
+
+.composer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* Bottom-left, inside the input frame, at every breakpoint. */
 .composer-upload {
   display: grid;
   place-items: center;
-  width: 44px;
-  height: 44px;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
   border: 1px solid var(--line-strong);
-  border-radius: 8px;
+  border-radius: 50%;
   background: #f8fafc;
   color: var(--accent-dark);
-  font-size: 1.5rem;
+  font-size: 1.35rem;
   font-weight: 700;
   line-height: 1;
   text-decoration: none;
@@ -445,14 +459,16 @@ body {
   clip-path: inset(50%);
 }
 
+/* Borderless: the composer frame itself is the input surface. */
 .chat-composer textarea {
   width: 100%;
-  min-height: 52px;
+  min-height: 48px;
   max-height: 180px;
-  resize: vertical;
-  padding: 10px 12px;
-  border: 1px solid var(--line-strong);
-  border-radius: 6px;
+  resize: none;
+  padding: 6px 6px 0;
+  border: 0;
+  outline: none;
+  background: transparent;
   color: var(--ink);
   font: inherit;
 }
@@ -773,15 +789,10 @@ body {
     max-width: 100%;
   }
 
-  /* At 375px the upload button and textarea share the first row and Send drops to its
-     own full-width row, so no control overlaps or gets clipped. */
-  .chat-composer {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
+  /* The composer keeps the same shape at 375px: input on top, "+" bottom-left and Send
+     bottom-right inside the same frame. Nothing overlaps or wraps. */
   .chat-composer button[type="submit"] {
-    grid-column: 1 / -1;
-    width: 100%;
+    min-width: 84px;
   }
 
   .menu-toggle-text {

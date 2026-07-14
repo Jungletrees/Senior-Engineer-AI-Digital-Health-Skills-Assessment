@@ -184,23 +184,28 @@ class ChainlitChatTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Searching your documents", chat.THINKING_MESSAGE)
 
-    def test_upload_button_uses_the_documented_header_link_component(self) -> None:
-        """The "+" upload entry point must exist on Chainlit, not only in Next.js.
-
-        It is declared through Chainlit's own `[[UI.header_links]]` component rather than
-        injected JavaScript, so it renders on every viewport and survives upgrades.
-        """
+    def test_upload_button_is_mounted_inside_the_composer(self) -> None:
+        """The "+" sits at the bottom-left corner INSIDE the input frame, as in Next.js."""
         root = Path(__file__).resolve().parents[1]
         config = (root / ".chainlit" / "config.toml").read_text(encoding="utf-8")
+        script = (root / "public" / "rag-composer-upload.js").read_text(encoding="utf-8")
+        theme = (root / "public" / "rag-theme.css").read_text(encoding="utf-8")
 
-        self.assertIn("[[UI.header_links]]", config)
-        self.assertIn('display_name = "Upload PDF"', config)
-        self.assertIn('icon_url = "/public/upload-icon.svg"', config)
-        self.assertIn("/documents", config)
-        self.assertTrue((root / "public" / "upload-icon.svg").is_file())
-        # No hand-rolled DOM injection is used any more.
-        self.assertFalse((root / "public" / "rag-upload.js").exists())
-        self.assertNotIn("custom_js", config)
+        self.assertIn('custom_js = "/public/rag-composer-upload.js"', config)
+
+        # Anchored to Chainlit's stable element ids, never to generated class names.
+        self.assertIn("message-composer", script)
+        self.assertIn("/documents", script)
+        self.assertIn("rag-upload-btn", script)
+
+        # Positioned bottom-left inside the composer frame, with room reserved so it can
+        # never sit on top of the user's typed text.
+        self.assertIn("#message-composer {", theme)
+        self.assertIn("position: relative", theme)
+        self.assertIn("#rag-upload-btn", theme)
+        self.assertIn("left: 12px", theme)
+        self.assertIn("bottom: 12px", theme)
+        self.assertIn("padding-left: 46px", theme)
 
     def test_welcome_message_points_at_the_upload_page(self) -> None:
         chat = _load_chat_module()

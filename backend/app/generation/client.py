@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import logging
+import os
 import re
-from dataclasses import dataclass
-from typing import Protocol
 
 from app.agents.orchestrator import GenerationPayload
 from app.chainlit_steps import chainlit_step
+# Same placeholder-key check the embedding client uses, so "your-anthropic-key" from
+# .env.example never selects a hosted client that would 401 on every request.
+from app.documents.chunking import _is_real_key
+from app.generation.result import GenerationClient, GenerationResult
 from app.settings import settings
+
+logger = logging.getLogger(__name__)
+
+# Re-exported so existing imports of GenerationResult/GenerationClient keep working.
+__all__ = [
+    "DeterministicGenerationClient",
+    "GenerationClient",
+    "GenerationResult",
+    "get_generation_client",
+]
 
 # The presenter recognizes this wording as a no-answer and returns the canonical
 # concise message, so the deterministic client never invents unsupported content.
@@ -26,21 +40,22 @@ _STOPWORDS = frozenset(
 )
 
 
-@dataclass(slots=True)
-class GenerationResult:
-    answer: str
-    model: str
-    token_input: int
-    token_output: int
-    cost_usd: float
+def get_generation_client() -> GenerationClient:
+    """Use the hosted model when a real key is configured; otherwise stay local.
 
+    The deterministic client cannot interpret a question — it can only quote back sentences
+    that share words with it. That is adequate for tests and for a keyless demo, but it is
+    not a RAG system a user would call intelligent, which is why the hosted client is the
+    real path.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if _is_real_key(api_key):
+        from app.generation.anthropic_client import AnthropicGenerationClient
 
-class GenerationClient(Protocol):
-    async def generate(self, payload: GenerationPayload, max_tokens: int) -> GenerationResult:
-        ...
+        return AnthropicGenerationClient(api_key=api_key)
 
-    async def summarize(self, messages: list[dict[str, str]], max_tokens: int) -> str:
-        ...
+    logger.warning("generation.provider_key_missing key=ANTHROPIC_API_KEY fallback=deterministic")
+    return DeterministicGenerationClient()
 
 
 class DeterministicGenerationClient:
@@ -67,10 +82,6 @@ class DeterministicGenerationClient:
     async def summarize(self, messages: list[dict[str, str]], max_tokens: int) -> str:
         text = " ".join(item["content"] for item in messages)
         return " ".join(text.split()[:max_tokens])
-
-
-def get_generation_client() -> GenerationClient:
-    return DeterministicGenerationClient()
 
 
 def _compose_grounded_answer(payload: GenerationPayload) -> str:

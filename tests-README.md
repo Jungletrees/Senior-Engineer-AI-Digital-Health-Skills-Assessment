@@ -51,6 +51,18 @@ All results below are from the chat-UI/response-presentation buildrun on branch 
 | Sliding context window | Old turns are summarized away; recent turns are kept verbatim |
 | Idempotency | Concurrent duplicate questions generate exactly once |
 
+**`app/tests/test_generation_provider.py`** covers the model-provider boundary without any network call (the Anthropic client is injected as a fake):
+
+| Concern | Why it matters |
+|---|---|
+| A placeholder key does not select the hosted client | `.env.example` ships `ANTHROPIC_API_KEY=your-anthropic-api-key-here`. If that counted as configured, every chat turn would 401 at answer time instead of falling back cleanly. |
+| The request omits `temperature` / `top_p` / `top_k` | These are **removed** on the current models (Sonnet 5, Opus 4.8/4.7) — sending any of them is a 400 that would break every answer. |
+| Thinking is explicitly disabled | On Sonnet 5, *omitting* the field runs adaptive thinking, and thinking tokens count against `max_tokens` — with a 500-token answer budget that would truncate the answer mid-sentence. |
+| The `cache_control` breakpoint survives to the API | The stable system prefix is what makes repeat turns cheap. |
+| Cached prefix tokens are still counted for cost | Dropping the cache-read half would under-report spend. |
+| A refusal or a provider outage becomes an honest no-answer | A model outage must never surface as a fabricated answer. |
+| An unusable page image is dropped, not fatal | With local storage a page image is a filesystem path, not a URL or base64 blob; sending it is a 400 that would take down the whole answer for a cosmetic attachment. |
+
 **`app/tests/test_response_presenter.py` (19 tests)** covers the presentation boundary: sentence-end superscripts, multi-source markers on one sentence, invalid `[cite:99]` markers dropped with no reference created, leading filename/document-name prefixes stripped, internal details (chunk ids, retrieval modes) removed, repeated caveats collapsed, paragraphs and bullets preserved, reference entries built from chunk metadata only (a model-invented reference list is discarded), concise no-answer with no citations, and a jargon guard on all user-facing copy.
 
 **`frontend/e2e/chat-ui.spec.ts` (16 tests, real Chromium)** covers active navigation state, the hamburger drawer opening/closing/Escape/close-on-navigate at 375/768/1024, the permanent sidebar at 1440, the loading row appearing on submit and being replaced by the answer, duplicate-send prevention, superscripts linked to a `Sources` list, a concise no-answer rendering no empty source list, and the `+` upload button being present with no horizontal overflow and no control overlap on **both** chat surfaces at all four viewports.
