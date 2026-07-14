@@ -193,6 +193,81 @@ class DeterministicEmbeddingClient:
         return [_hash_embedding(text, self.dimensions) for text in texts]
 
 
+async def _embed_with_reuse(
+    db: AsyncSession,
+    chunks: list[PreparedChunk],
+    client: EmbeddingClient,
+) -> list[list[float]]:
+    """Embed only the chunks whose text has never been embedded before.
+
+    Document-level dedup (SHA-256 of the file bytes) already stops the *same file* being
+    ingested twice. It cannot help when the same content arrives as different bytes — a
+    re-export, a re-scan, the same protocol inside a larger bundle, the same boilerplate
+    appendix in three different guidelines. Those produce byte-different files whose chunks
+    are textually identical, and every one of those chunks would otherwise be embedded and
+    paid for again.
+
+    `chunks.content_hash` is the dedup key. An existing vector for the same text is reused
+    verbatim, which is safe because it is the same text embedded by the same model — rows
+    are scoped to `embedding_model`, so a vector from a different model is never reused.
+
+    Reuse happens across documents and therefore across sessions: the corpus is shared, so
+    a chunk embedded for one user's upload is reused for everyone.
+    """
+    if not chunks:
+        return []
+
+    model = get_embedding_model()
+    hashes = [chunk.content_hash for chunk in chunks]
+
+    rows = (
+        await db.execute(
+            text(
+                """
+                SELECT DISTINCT ON (content_hash) content_hash, embedding
+                FROM chunks
+                WHERE content_hash = ANY(:hashes)
+                  AND embedding_model = :model
+                  AND embedding IS NOT NULL
+                """
+            ),
+            {"hashes": hashes, "model": model},
+        )
+    ).mappings().all()
+    cached = {row["content_hash"]: _parse_vector(row["embedding"]) for row in rows}
+
+    # Deduplicate WITHIN the request too. A document repeats content (a running header, a
+    # boilerplate warning on every page); sending each copy would pay for the same text
+    # several times in a single ingestion.
+    pending: dict[str, PreparedChunk] = {}
+    for chunk in chunks:
+        if chunk.content_hash not in cached:
+            pending.setdefault(chunk.content_hash, chunk)
+
+    logger.info(
+        "embedding.reuse total=%s reused=%s embedded=%s model=%s",
+        len(chunks),
+        len(chunks) - len(pending),
+        len(pending),
+        model,
+    )
+
+    if pending:
+        to_embed = list(pending.values())
+        fresh = await client.embed_texts([chunk.content for chunk in to_embed])
+        for chunk, vector in zip(to_embed, fresh, strict=True):
+            cached[chunk.content_hash] = vector
+
+    return [cached[chunk.content_hash] for chunk in chunks]
+
+
+def _parse_vector(value: object) -> list[float]:
+    """pgvector comes back as a bracketed string over the raw driver."""
+    if isinstance(value, (list, tuple)):
+        return [float(item) for item in value]
+    return [float(part) for part in str(value).strip("[]").split(",") if part]
+
+
 def get_chunk_size_tokens() -> int:
     """Read configured chunk size."""
     return int(os.getenv("CHUNK_SIZE_TOKENS", "480"))
@@ -374,21 +449,59 @@ async def prepare_and_persist_document_chunks(
         len(blocks),
     )
 
-    chunks = chunk_structured_blocks(blocks)
+    # Choose HOW to chunk from what the document actually is, rather than running one
+    # strategy over everything. See documents/chunk_strategy.py for the reasoning.
+    from app.documents.chunk_strategy import (
+        ChunkStrategy,
+        flatten_for_fixed_size,
+        profile_blocks,
+        select_strategy,
+    )
+
+    plan = select_strategy(
+        profile_blocks(blocks, document.page_count or 0),
+        default_overlap=get_chunk_overlap_ratio(),
+    )
+    logger.info(
+        "chunking.strategy document_id=%s strategy=%s reason=%s",
+        document.id,
+        plan.strategy.value,
+        plan.reason,
+    )
+
+    blocks_for_chunking = (
+        blocks if plan.strategy is ChunkStrategy.STRUCTURE_AWARE else flatten_for_fixed_size(blocks)
+    )
+    chunks = chunk_structured_blocks(blocks_for_chunking, overlap_ratio=plan.overlap_ratio)
     if not chunks:
         fallback = _fallback_document_text(pdf_path)
         if fallback:
             chunks = chunk_structured_blocks(
-                [StructuredBlock(content=fallback, page_number=1, block_type="paragraph")]
+                [StructuredBlock(content=fallback, page_number=1, block_type="paragraph")],
+                overlap_ratio=plan.overlap_ratio,
             )
     logger.info("chunking.prepare.complete document_id=%s chunks=%s", document.id, len(chunks))
 
+    # Record the decision twice, on purpose:
+    #  - on the document, so a reviewer can see which strategy it got without a join;
+    #  - in the agent trace, so the ingestion chain replays alongside every other decision.
+    document.metadata_ = {**(document.metadata_ or {}), **plan.as_metadata()}
+
+    from app.agents.tracing import record_decision
+
+    await record_decision(
+        db,
+        agent_id="ingestion_agent",
+        decision="chunk_strategy_selected",
+        detail=plan.as_metadata(),
+        document_id=document.id,
+    )
+
     client = embedding_client or get_embedding_client()
-    texts = [chunk.content for chunk in chunks]
-    logger.info("embedding.generate.start document_id=%s chunks=%s", document.id, len(texts))
-    embeddings = await client.embed_texts(texts)
-    validate_embedding_batch(embeddings, expected_count=len(texts), expected_dim=get_embedding_dim())
-    logger.info("embedding.generate.complete document_id=%s embeddings=%s", document.id, len(embeddings))
+    embeddings = await _embed_with_reuse(db, chunks, client)
+    validate_embedding_batch(
+        embeddings, expected_count=len(chunks), expected_dim=get_embedding_dim()
+    )
 
     logger.info("chunks.db.transaction.start document_id=%s", document.id)
     await db.execute(delete(Chunk).where(Chunk.document_id == document.id))

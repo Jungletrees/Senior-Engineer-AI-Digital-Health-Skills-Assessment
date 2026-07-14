@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import functools
+import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
@@ -11,6 +13,8 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.settings import settings
+
+logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
@@ -126,3 +130,62 @@ def _json_literal(value: Any) -> str:
     import json
 
     return json.dumps(value, default=str)
+
+
+# ---------------------------------------------------------------------------- decisions
+
+async def record_decision(
+    db: AsyncSession | None,
+    *,
+    agent_id: str,
+    decision: str,
+    detail: dict[str, Any],
+    session_id: Any = None,
+    query_audit_log_id: Any = None,
+    document_id: Any = None,
+    score: float | None = None,
+) -> None:
+    """Persist a decision or a score, not just a tool call.
+
+    `agent_trace_log` recorded WHAT ran but never WHY it ran that way. The choices that
+    actually determine an answer — which model the router picked and on what basis, which
+    chunking strategy a document got, how confident the reranker was — were invisible to an
+    audit. Recording them against the same `query_audit_log_id` as the tool calls means one
+    question's entire chain can be replayed end to end from a single key.
+
+    Tracing must never take down a request: a failure to write an audit row is logged and
+    swallowed, because losing observability is strictly better than losing the answer.
+    """
+    if not settings.agent_trace_logging_enabled or db is None:
+        return
+    try:
+        await db.execute(
+            text(
+                """
+                INSERT INTO agent_trace_log (
+                    agent_name, agent_id, tool_name, event_type,
+                    input, output, score,
+                    session_id, query_audit_log_id, document_id
+                )
+                VALUES (
+                    :agent_name, :agent_id, :decision, :event_type,
+                    CAST(:input AS jsonb), CAST(:output AS jsonb), :score,
+                    :session_id, :query_audit_log_id, :document_id
+                )
+                """
+            ),
+            {
+                "agent_name": agent_id,
+                "agent_id": agent_id,
+                "decision": decision,
+                "event_type": "score" if score is not None else "decision",
+                "input": json.dumps({"decision": decision}),
+                "output": json.dumps(_redact(detail)),
+                "score": score,
+                "session_id": session_id,
+                "query_audit_log_id": query_audit_log_id,
+                "document_id": document_id,
+            },
+        )
+    except Exception as exc:  # pragma: no cover - observability must not break the request
+        logger.warning("trace.decision_write_failed agent_id=%s error=%s", agent_id, exc)

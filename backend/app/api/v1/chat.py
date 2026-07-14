@@ -34,7 +34,8 @@ from app.chat.response_presenter import (
 )
 from app.chainlit_steps import chainlit_step
 from app.core.cost import compute_cost
-from app.core.model_router import current_status
+from app.agents.tracing import record_decision
+from app.core.model_router import Task, current_status, resolve
 from app.core.errors import RateLimitExceededError, ValidationError
 from app.database import get_db
 from app.generation.client import GenerationClient, get_generation_client, routed_model
@@ -177,6 +178,26 @@ async def chat(
             cache_status="miss",
         )
 
+    # Record WHICH model was chosen and why, against this question's audit id, so the whole
+    # chain (router -> retrieval -> rerank -> generation) replays from one key.
+    chosen = resolve(Task.CHAT)
+    await record_decision(
+        db,
+        agent_id="model_router",
+        decision="generation_model_selected",
+        detail={
+            "provider": chosen.provider if chosen else None,
+            "model": chosen.model if chosen else "deterministic-fallback",
+            "routing": settings.model_routing,
+            "reason": "cheapest configured provider suited to the task"
+            if chosen
+            else "no provider key configured; answers are extracted, not generated",
+            "blended_cost_rank": chosen.blended_cost if chosen else None,
+        },
+        session_id=session_id,
+        query_audit_log_id=audit_id,
+    )
+
     conversation = await load_conversation_context(db, session_id, generation_client)
     try:
         payload_for_generation = await assemble_generation_payload(
@@ -202,6 +223,24 @@ async def chat(
             cache_status="miss",
             grounded=False,
         )
+
+    # The reranker's confidence is the end-to-end retrieval quality signal. Persisting it
+    # per query is what makes "why was this answer weak?" answerable after the fact.
+    await record_decision(
+        db,
+        agent_id="retrieval_agent",
+        decision="retrieval_completed",
+        detail={
+            "retrieval_mode": payload_for_generation.retrieval_mode,
+            "chunks_retrieved": len(payload_for_generation.source_chunks),
+            "documents": sorted(
+                {str(chunk.document_id) for chunk in payload_for_generation.source_chunks}
+            ),
+        },
+        score=payload_for_generation.top_relevance_score,
+        session_id=session_id,
+        query_audit_log_id=audit_id,
+    )
 
     _inject_conversation_context(payload_for_generation.messages, conversation.messages)
     generated = await generation_client.generate(payload_for_generation, max_tokens=settings.max_output_tokens_chat)

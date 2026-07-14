@@ -46,6 +46,9 @@ class GenerationPayload:
     source_chunk_ids: list[UUID]
     source_chunks: list[RetrievalCandidate]
     retrieval_mode: str
+    # Reranker confidence for this query. Carried out of retrieval so `/chat` can audit the
+    # end-to-end quality signal instead of it dying inside the retrieval agent.
+    top_relevance_score: float = 0.0
 
 
 async def consult_retrieval_agent(
@@ -120,6 +123,7 @@ async def assemble_generation_payload(
         source_chunk_ids=[chunk.chunk_id for chunk in chunks],
         source_chunks=chunks,
         retrieval_mode=retrieval.retrieval_mode,
+        top_relevance_score=retrieval.top_relevance_score,
     )
 
 
