@@ -17,11 +17,13 @@ RUN useradd -ms /bin/bash -d ${HOME_DIR} container_user \
     && mkdir -p ${HOME_DIR} /tmp/prometheus \
     && chown -R container_user: ${HOME_DIR} /tmp/prometheus
 
-COPY requirements.txt /requirements.txt
+COPY backend/requirements.txt /requirements.txt
 
-RUN --mount=type=cache,target=/root/.cache/pip pip install --default-timeout=180 --retries=10 -r /requirements.txt
+RUN pip install --no-cache-dir --default-timeout=180 --retries=10 -r /requirements.txt
 
-COPY . ${HOME_DIR}
+COPY backend ${HOME_DIR}
+COPY gold_standard ${HOME_DIR}/gold_standard
+COPY pytest.ini ${HOME_DIR}/pytest.ini
 RUN find ${HOME_DIR} -type f -print0 | xargs -0 dos2unix
 RUN chmod +x ${HOME_DIR}/startup.sh
 RUN chmod +x ${HOME_DIR}/startup_unix.sh

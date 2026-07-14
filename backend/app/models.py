@@ -185,6 +185,11 @@ class SemanticCache(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
     query_embedding: Mapped[object] = mapped_column(Vector(1536), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=text("'text-embedding-3-small'"),
+    )
     representative_query: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     source_doc_ids: Mapped[list[UUID] | None] = mapped_column(ARRAY(PGUUID(as_uuid=True)))
@@ -194,6 +199,7 @@ class SemanticCache(Base):
 
     __table_args__ = (
         Index("semantic_cache_embedding_idx", "query_embedding", postgresql_using="hnsw", postgresql_ops={"query_embedding": "vector_cosine_ops"}),
+        Index("semantic_cache_embedding_model_idx", "embedding_model"),
         Index("semantic_cache_last_used_idx", "last_used_at"),
     )
 
@@ -227,6 +233,13 @@ class QueryAuditLog(Base):
             "query_audit_log_idempotency_key_idx",
             "idempotency_key",
             postgresql_where=text("idempotency_key IS NOT NULL"),
+        ),
+        Index("query_audit_log_session_created_idx", "session_id", text("created_at DESC")),
+        Index(
+            "query_audit_log_client_ip_created_idx",
+            "client_ip",
+            text("created_at DESC"),
+            postgresql_where=text("client_ip IS NOT NULL"),
         ),
     )
 
@@ -265,6 +278,10 @@ class ResponseGrade(Base):
     grounding_check_passed: Mapped[bool | None] = mapped_column(Boolean)
     judge_score: Mapped[int | None] = mapped_column(SmallInteger)
     judge_rationale: Mapped[str | None] = mapped_column(Text)
+    judge_model: Mapped[str | None] = mapped_column(Text)
+    judge_temperature: Mapped[Decimal | None] = mapped_column(Numeric)
+    judge_rubric_version: Mapped[int | None] = mapped_column(Integer)
+    grounding_detail: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     sampled: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=text("false"))
     graded_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
@@ -277,6 +294,7 @@ class AnomalyFlag(Base):
 
     id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
     metric_name: Mapped[str] = mapped_column(Text, nullable=False)
+    cadence: Mapped[str] = mapped_column(Text, nullable=False, server_default=text("'hourly'"))
     hour_of_day: Mapped[int] = mapped_column(SmallInteger, nullable=False)
     observed_value: Mapped[Decimal | None] = mapped_column(Numeric)
     baseline_mean: Mapped[Decimal | None] = mapped_column(Numeric)
@@ -289,4 +307,62 @@ class AnomalyFlag(Base):
     __table_args__ = (
         CheckConstraint("hour_of_day BETWEEN 0 AND 23", name="hour_of_day_range"),
         Index("anomaly_flag_metric_idx", "metric_name", "created_at"),
+    )
+
+
+class GoldEvalRun(Base):
+    __tablename__ = "gold_eval_run"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    run_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    git_sha: Mapped[str] = mapped_column(Text, nullable=False)
+    corpus_version: Mapped[str] = mapped_column(Text, nullable=False)
+    rubric_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    judge_model: Mapped[str] = mapped_column(Text, nullable=False)
+    judge_temperature: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    overall_score: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    category_scores: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    pass_rate: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    question_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    skipped_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    trigger: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    results: Mapped[list[GoldEvalResult]] = relationship(back_populates="run", cascade="all, delete-orphan")
+
+    __table_args__ = (
+        Index(
+            "gold_eval_run_compat_idx",
+            "corpus_version",
+            "rubric_version",
+            "judge_model",
+            "judge_temperature",
+            "created_at",
+        ),
+    )
+
+
+class GoldEvalResult(Base):
+    __tablename__ = "gold_eval_result"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    run_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("gold_eval_run.id", ondelete="CASCADE"), nullable=False)
+    question_id: Mapped[str] = mapped_column(Text, nullable=False)
+    category: Mapped[str] = mapped_column(Text, nullable=False)
+    weight: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    per_question_score: Mapped[Decimal] = mapped_column(Numeric, nullable=False)
+    criterion_scores: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    passed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    answer_text: Mapped[str | None] = mapped_column(Text)
+    cited_docs: Mapped[list[str] | None] = mapped_column(ARRAY(Text))
+    cited_pages: Mapped[list[int] | None] = mapped_column(ARRAY(Integer))
+    query_audit_log_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), ForeignKey("query_audit_log.id", ondelete="SET NULL"))
+    judge_rationale: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    run: Mapped[GoldEvalRun] = relationship(back_populates="results")
+
+    __table_args__ = (
+        Index("gold_eval_result_run_idx", "run_id"),
+        Index("gold_eval_result_category_idx", "category", "created_at"),
     )

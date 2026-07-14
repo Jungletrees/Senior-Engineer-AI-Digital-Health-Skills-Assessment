@@ -95,11 +95,14 @@ async def lexical_search(
                     c.content,
                     c.page_number,
                     c.section_path,
-                    ts_rank_cd(c.content_tsv, plainto_tsquery('english', :query)) AS lexical_score
+                    ts_rank_cd(
+                        c.content_tsv,
+                        plainto_tsquery(CAST(:tsvector_config AS regconfig), :query)
+                    ) AS lexical_score
                 FROM chunks c
                 JOIN documents d ON d.id = c.document_id
                 WHERE d.status = 'indexed'
-                  AND c.content_tsv @@ plainto_tsquery('english', :query)
+                  AND c.content_tsv @@ plainto_tsquery(CAST(:tsvector_config AS regconfig), :query)
                   {_document_filter_sql(document_id_filter)}
                 ORDER BY lexical_score DESC, c.chunk_index ASC
                 LIMIT :limit
@@ -107,6 +110,7 @@ async def lexical_search(
             ),
             {
                 "query": query,
+                "tsvector_config": settings.grounding_tsvector_config,
                 "limit": limit,
                 **_document_filter_params(document_id_filter),
             },

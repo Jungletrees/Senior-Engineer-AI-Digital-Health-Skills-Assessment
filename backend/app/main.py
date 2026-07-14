@@ -9,20 +9,17 @@ from app.core.errors import AppError, app_error_handler
 from app.home.routes import router as home_router
 from app.documents.routes import router as documents_router
 from app.security.guardrails import InputValidationMiddleware, SecurityHeadersMiddleware
-from app.scheduling.cache_scheduler import (
-    start_cache_hygiene_scheduler,
-    stop_cache_hygiene_scheduler,
-)
+from app.scheduling.cache_scheduler import start_schedulers, stop_schedulers
 from app.settings import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    cache_scheduler_task = start_cache_hygiene_scheduler()
+    scheduler_tasks = start_schedulers()
     try:
         yield
     finally:
-        await stop_cache_hygiene_scheduler(cache_scheduler_task)
+        await stop_schedulers(scheduler_tasks)
 
 
 app = FastAPI(lifespan=lifespan)

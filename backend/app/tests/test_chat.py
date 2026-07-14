@@ -279,7 +279,7 @@ async def test_query_audit_finalized_and_source_chunks_persist(migrated_session:
     assert audit["latency_ms"] is not None
     assert audit["token_input"] == 10
     assert audit["token_output"] == 6
-    assert str(audit["cost_usd"]) == "0.000000"
+    assert str(audit["cost_usd"]) == "0.000120"
     assert assistant["source_chunk_ids"] == [candidate.chunk_id]
 
 
@@ -290,9 +290,11 @@ def _chat_app(session: AsyncSession, retrieval: FakeRetrievalAgent, generation: 
     app.state.embedding_client = StaticEmbeddingClient()
     app.state.retrieval_agent = retrieval
     app.state.generation_client = generation
+    session_factory = async_sessionmaker(bind=session.bind, class_=AsyncSession, expire_on_commit=False)
 
     async def _get_db():
-        yield session
+        async with session_factory() as request_session:
+            yield request_session
 
     app.dependency_overrides[get_db] = _get_db
     return app

@@ -3,7 +3,10 @@ This module contains FastAPI routes for Home page
 """
 
 from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from sqlalchemy import text
+
+from app.database import async_session
 
 router = APIRouter()
 
@@ -108,3 +111,17 @@ async def home():
         </body>
     </html>
     """
+
+
+@router.get("/health")
+async def health() -> JSONResponse:
+    """Return backend/database health for Docker and load-balancer checks."""
+    try:
+        async with async_session() as session:
+            await session.execute(text("SELECT 1"))
+    except Exception as exc:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "unhealthy", "database": "unavailable", "error": str(exc)},
+        )
+    return JSONResponse(content={"status": "ok", "database": "ok"})

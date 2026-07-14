@@ -46,6 +46,9 @@ class FakeEmbeddingClient:
 
 class FakeImage:
     def save(self, path: str | Path, image_format: str) -> None:
+        if hasattr(path, "write"):
+            path.write(b"fake-png")
+            return
         Path(path).write_bytes(b"fake-png")
 
 

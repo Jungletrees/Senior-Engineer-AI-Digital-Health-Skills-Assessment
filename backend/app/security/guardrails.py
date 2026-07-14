@@ -14,6 +14,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from app.chainlit_steps import chainlit_step
 from app.core.errors import ValidationError
 from app.retrieval.models import RetrievalCandidate
+from app.security.numeric_grounding import numeric_claims_supported
 from app.settings import settings
 
 SAFE_FALLBACK_MESSAGE = (
@@ -128,28 +129,69 @@ async def filter_output(answer: str, cited_chunks: list[RetrievalCandidate]) -> 
     return OutputFilterResult(answer=answer, status="passed", reason=None, grounded=True)
 
 
-def _first_filter_failure(answer: str, cited_chunks: list[RetrievalCandidate]) -> str | None:
+def deterministic_grounding_check(
+    answer: str,
+    source_texts: list[str],
+) -> tuple[bool, dict[str, Any]]:
+    """Run the shared lexical + numeric grounding check over plain source text."""
     has_answer_text = bool(answer.strip())
-    if has_answer_text and not _grounding_passes(answer, cited_chunks):
-        return "grounding_fail"
+    detail: dict[str, Any] = {
+        "lexical_grounding_passed": False,
+        "numeric_grounding_passed": True,
+        "unsupported_numeric_claims": [],
+    }
+    if not has_answer_text:
+        detail["reason"] = "length_fail"
+        return False, detail
+
+    lexical_passed = lexical_grounding_passes(answer, source_texts)
+    detail["lexical_grounding_passed"] = lexical_passed
+    if not lexical_passed:
+        detail["reason"] = "grounding_fail"
+        return False, detail
+
+    if settings.grounding_numeric_check_enabled:
+        numeric_supported, unsupported = numeric_claims_supported(
+            answer,
+            source_texts,
+            tol=0.0,
+        )
+        detail["numeric_grounding_passed"] = numeric_supported
+        detail["unsupported_numeric_claims"] = unsupported
+        if not numeric_supported:
+            detail["reason"] = "numeric_grounding_fail"
+            return False, detail
+
+    detail["reason"] = None
+    return True, detail
+
+
+def lexical_grounding_passes(answer: str, source_texts: list[str]) -> bool:
+    """Return whether answer text has enough lexical overlap with cited source text."""
+    if not source_texts:
+        return False
+    source_text = "\n".join(source_texts)
+    sentences = [item.strip() for item in re.split(r"[.!?]\s+", answer) if item.strip()]
+    if not sentences:
+        return False
+    return max(_score_sentence(sentence, source_text) for sentence in sentences) >= 0.15
+
+
+def _first_filter_failure(answer: str, cited_chunks: list[RetrievalCandidate]) -> str | None:
+    source_texts = [chunk.content for chunk in cited_chunks]
+    grounded, detail = deterministic_grounding_check(answer, source_texts)
+    if not grounded:
+        return str(detail["reason"])
     lowered = answer.lower()
     if any(canary in lowered for canary in LEAK_CANARIES):
         return "leak_check_fail"
     if _introduced_pii(answer, cited_chunks):
         return "pii_check_fail"
-    if not has_answer_text:
-        return "length_fail"
     return None
 
 
 def _grounding_passes(answer: str, cited_chunks: list[RetrievalCandidate]) -> bool:
-    if not cited_chunks:
-        return False
-    source_text = "\n".join(chunk.content for chunk in cited_chunks)
-    sentences = [item.strip() for item in re.split(r"[.!?]\s+", answer) if item.strip()]
-    if not sentences:
-        return False
-    return max(_score_sentence(sentence, source_text) for sentence in sentences) >= 0.15
+    return lexical_grounding_passes(answer, [chunk.content for chunk in cited_chunks])
 
 
 def _introduced_pii(answer: str, cited_chunks: list[RetrievalCandidate]) -> bool:

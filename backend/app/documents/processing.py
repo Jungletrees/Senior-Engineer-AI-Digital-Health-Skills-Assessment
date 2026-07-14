@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from io import BytesIO
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -12,7 +13,9 @@ import pdfplumber
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.documents.storage import put_page_image_bytes
 from app.models import Document, PageImage
+from app.settings import settings
 
 try:  # pragma: no cover - exercised through patched call sites in unit tests.
     from pdf2image import convert_from_path
@@ -80,7 +83,7 @@ def get_ocr_text_yield_threshold() -> float:
 
 def get_page_image_storage_backend() -> str:
     """Read the configured page-image storage backend."""
-    return os.getenv("PAGE_IMAGE_STORAGE_BACKEND", "local")
+    return settings.page_image_storage_backend
 
 
 def resolve_document_pdf_path(document: Document) -> Path:
@@ -162,8 +165,6 @@ def rasterize_page_to_local_storage(
     dpi: int | None = None,
 ) -> str:
     """Rasterize one PDF page to a local PNG and return its storage reference."""
-    if get_page_image_storage_backend() != "local":
-        raise RuntimeError("Only local page-image storage is supported before BC18")
     if convert_from_path is None:
         raise RuntimeError("pdf2image is not installed")
 
@@ -181,8 +182,14 @@ def rasterize_page_to_local_storage(
     if not images:
         raise RuntimeError(f"Unable to rasterize page {page_number}")
 
-    images[0].save(output_path, "PNG")
-    return str(output_path)
+    image_buffer = BytesIO()
+    images[0].save(image_buffer, "PNG")
+    return put_page_image_bytes(
+        document_id=str(document.id),
+        page_number=page_number,
+        data=image_buffer.getvalue(),
+        local_path=output_path,
+    )
 
 
 async def process_document_structure(

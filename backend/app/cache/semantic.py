@@ -12,6 +12,7 @@ from app.documents.chunking import (
     EmbeddingClient,
     get_embedding_client,
     get_embedding_dim,
+    get_embedding_model,
     validate_embedding_batch,
 )
 from app.settings import settings
@@ -41,11 +42,12 @@ async def lookup_semantic_cache(
                 """
                 SELECT id, answer, source_doc_ids, 1 - (query_embedding <=> CAST(:embedding AS vector)) AS similarity
                 FROM semantic_cache
+                WHERE embedding_model = :embedding_model
                 ORDER BY query_embedding <=> CAST(:embedding AS vector)
                 LIMIT 1
                 """
             ),
-            {"embedding": _vector_literal(embedding)},
+            {"embedding": _vector_literal(embedding), "embedding_model": get_embedding_model()},
         )
     ).mappings().first()
     if row is None:
@@ -89,6 +91,7 @@ async def write_semantic_cache(
             """
             INSERT INTO semantic_cache (
                 query_embedding,
+                embedding_model,
                 representative_query,
                 answer,
                 source_doc_ids,
@@ -97,6 +100,7 @@ async def write_semantic_cache(
             )
             VALUES (
                 CAST(:embedding AS vector),
+                :embedding_model,
                 :representative_query,
                 :answer,
                 :source_doc_ids,
@@ -107,6 +111,7 @@ async def write_semantic_cache(
         ),
         {
             "embedding": _vector_literal(embedding),
+            "embedding_model": get_embedding_model(),
             "representative_query": query,
             "answer": answer,
             "source_doc_ids": source_doc_ids,

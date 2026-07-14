@@ -1,8 +1,8 @@
 services:
   backend:
       build:
-        context: ./backend
-        dockerfile: Dockerfile
+        context: .
+        dockerfile: backend/Dockerfile
       restart: always
       ports:
         - "6100:6100"

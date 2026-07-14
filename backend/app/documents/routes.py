@@ -1,6 +1,6 @@
-import os
 import hashlib
 import io
+from pathlib import Path
 from uuid import UUID
 import pdfplumber
 
@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.models import Document
+from app.documents.storage import delete_document_ref, put_document_bytes
 from app.security.auth import AuthSession, require_auth
 from app.settings import settings
 
@@ -29,7 +30,7 @@ def get_max_pdf_pages() -> int:
 
 def get_upload_storage_backend() -> str:
     """Read the configured storage engine."""
-    return os.getenv("UPLOAD_STORAGE_BACKEND", "local")
+    return settings.upload_storage_backend
 
 
 @router.post("", status_code=status.HTTP_202_ACCEPTED)
@@ -45,10 +46,7 @@ async def upload_document(
     upload_storage_backend = get_upload_storage_backend()
 
     # Resolve upload storage path relative to the app/ directory
-    upload_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../uploads")
-    )
-    os.makedirs(upload_dir, exist_ok=True)
+    upload_dir = Path(__file__).resolve().parents[1] / "uploads"
 
     # 1. Read file bytes and reset pointer immediately
     await file.seek(0)
@@ -111,14 +109,13 @@ async def upload_document(
             await db.delete(existing_document)
             await db.commit()
 
-    # 7. Store file locally
-    if upload_storage_backend == "local":
-        local_path = os.path.join(upload_dir, f"{content_hash}.pdf")
-        with open(local_path, "wb") as f:
-            f.write(file_bytes)
-    else:
-        # Placeholder for other storage engines (e.g. S3 at BC18)
-        pass
+    # 7. Store file in the configured backend.
+    storage_ref = put_document_bytes(
+        content_hash=content_hash,
+        filename=file.filename or "uploaded_document.pdf",
+        data=file_bytes,
+        local_dir=upload_dir,
+    )
 
     # 8. Persist Document metadata in the PostgreSQL relational DB
     new_doc = Document(
@@ -126,7 +123,7 @@ async def upload_document(
         content_hash=content_hash,
         status="processing",
         page_count=page_count,
-        metadata_={"storage_backend": upload_storage_backend}
+        metadata_={"storage_backend": upload_storage_backend, "storage_ref": storage_ref}
     )
     db.add(new_doc)
     await db.commit()
@@ -210,17 +207,15 @@ async def delete_document(
 
     # 1. Clean up physical file on disk
     upload_storage_backend = get_upload_storage_backend()
-    upload_dir = os.path.abspath(
-        os.path.join(os.path.dirname(__file__), "../uploads")
-    )
-    if upload_storage_backend == "local":
-        local_path = os.path.join(upload_dir, f"{document.content_hash}.pdf")
-        if os.path.exists(local_path):
-            try:
-                os.remove(local_path)
-            except OSError:
-                # Log but proceed with DB delete to prevent data mismatches
-                pass
+    upload_dir = Path(__file__).resolve().parents[1] / "uploads"
+    try:
+        delete_document_ref(
+            storage_ref=(document.metadata_ or {}).get("storage_ref"),
+            content_hash=str(document.content_hash).strip(),
+            local_dir=upload_dir,
+        )
+    except OSError:
+        pass
 
     # 2. Clean up Postgres database row (ON DELETE CASCADE cleans up chunks/page_images)
     await db.delete(document)

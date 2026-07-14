@@ -21,6 +21,7 @@ from app.cache.exact import CacheHit
 from app.cache.semantic import lookup_semantic_cache, write_semantic_cache
 from app.chat.conversation import load_conversation_context
 from app.chainlit_steps import chainlit_step
+from app.core.cost import compute_cost
 from app.core.errors import RateLimitExceededError, ValidationError
 from app.database import get_db
 from app.generation.client import GenerationClient, get_generation_client
@@ -52,7 +53,7 @@ class ChatResponse(BaseModel):
     output_filter_reason: str | None = None
 
 
-@router.post("/chat")
+@router.post("/chat", response_model=None)
 async def chat(
     payload: ChatRequest,
     request: Request,
@@ -183,7 +184,7 @@ async def chat(
         latency_ms=_latency(started),
         token_input=generated.token_input,
         token_output=generated.token_output,
-        cost_usd=Decimal(str(generated.cost_usd)),
+        cost_usd=compute_cost(generated.model, generated.token_input, generated.token_output),
     )
     await db.commit()
     return ChatResponse(
@@ -270,7 +271,9 @@ async def _wait_for_duplicate(db: AsyncSession, session_id: UUID, idempotency_ke
     for _ in range(40):
         completed = await _completed_response_for_key(db, session_id, idempotency_key)
         if completed is not None:
+            await db.rollback()
             return completed
+        await db.rollback()
         await asyncio.sleep(0.25)
     return JSONResponse(
         status_code=202,
