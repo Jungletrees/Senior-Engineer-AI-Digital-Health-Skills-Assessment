@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, DragEvent, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   mergePolledDocument,
   optimisticRemove,
@@ -118,6 +119,11 @@ export default function DocumentsPage() {
   return (
     <section className="documents-shell" aria-label="Document manager">
       <header className="documents-header">
+        {/* Always visible, at every viewport: on tablet/mobile the sidebar is behind a
+            hamburger, so without this the way back to chat is hidden behind a menu. */}
+        <Link href="/" className="back-to-chat">
+          <span aria-hidden="true">←</span> Back to chat
+        </Link>
         <h1>My documents</h1>
         <p>Add a PDF here, then ask questions about it in chat.</p>
       </header>

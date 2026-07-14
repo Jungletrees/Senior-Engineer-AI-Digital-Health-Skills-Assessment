@@ -1,7 +1,53 @@
 # Development Build Plan (plan.md)
 
-## Current Status: [ ] Production Gap Closure In Progress
-**Active Build Cycle:** Production Gap Closure - Chainlit, Citations, Upload Enqueue, Playwright, Reviewer Docs
+## Current Status: [x] Chat UI Requirement & Response Presentation — Complete
+**Active Build Cycle:** Chat UI Requirement Audit and Response Presentation (branch `codex/chat-ui-requirement-polish`)
+
+---
+
+## Active Cycle: Chat UI Requirement & Response Presentation
+
+**Status:** [x] Implemented and verified. Playwright now runs in a real browser; clean-clone run and real gold scoring remain pending.
+
+### Objective
+Audit the chat-surface requirement against the starter, then deliver a polished chat experience whose answers are grounded, concise, plainly written, and cited with Chicago-style superscripts at the end of each supported sentence.
+
+### Chat-surface decision
+**Both surfaces are supported, alongside each other** — the starter's preferred option. Next.js (`:3000`) and Chainlit (`:8000`) are thin, equivalent clients over the same `/api/v1/chat` contract. Neither owns retrieval, generation, or citation logic, so they cannot disagree; a divergence is a bug. Logged in `ARCHITECTURE (4).md` §18.
+
+### Completed Work
+- [x] **RESP1/RESP2** `backend/app/chat/response_presenter.py` — the single boundary owning writing-style and citation rules. Validates `[cite:n]` markers against backend candidates, moves them to the end of the sentence they support, renders Chicago superscripts, drops invalid markers, and builds the reference list from chunk metadata only.
+- [x] **RESP3** Generation prompt rewritten with the citation contract and numbered `<context id="n">` blocks. The deterministic client no longer opens answers with `Based on <filename>.pdf, …` — the exact defect the reviewer saw.
+- [x] Uncited factual answers are converted to a concise no-answer instead of being shown ungrounded. Only grounded, cited answers are cache-eligible.
+- [x] Migration `0014` stores `source_chunk_ids` on both caches so a cache hit rebuilds the reference list its superscripts point at.
+- [x] **UI1** Both chat surfaces audited, rebuilt, and confirmed non-stale.
+- [x] **UI2** Active nav state from the route pathname; hamburger drawer at `<=1024px` with `aria-expanded`/`aria-controls`, Escape, close-on-navigate, and focus-visible rings. External links never claim active state.
+- [x] **UI3** Loading row appears on submit; the in-flight guard blocks duplicate sends; honest error copy on failure.
+- [x] **UI4** Answers render as inert text with paragraphs/bullets, superscripts linked to a `Sources` list; no citations means no `Sources` heading.
+- [x] `+` upload button on **both** chat surfaces at every viewport. Chainlit uses its documented `[[UI.header_links]]` component.
+- [x] User-facing copy rewritten in plain language; jargon guards added in backend, frontend, and Chainlit tests.
+- [x] "Document still being prepared" separated from "no documents yet".
+- [x] 17-test RAG system integration suite over a real multi-document corpus.
+- [x] Assumptions documented (`README.md`, `ARCHITECTURE (4).md` §21); trade-offs in §18; `DEPLOYMENT.md` extended with cloud-provider choice, CI/CD strategy, observability, DR, and cost.
+
+### Defects found and fixed during verification
+- Deterministic generation client opened every answer with the document filename.
+- Off-corpus questions ("snake bite") returned a confident, correctly-cited answer about malaria — retrieval's nearest neighbour was always quoted back, and lexical grounding could not catch it because the sentence really was verbatim from a source.
+- Cached answers kept their superscripts but lost their sources, rendering a dangling citation.
+- The mobile menu scrim was exposed as a second button with the same label as the toggle (duplicate a11y control).
+- A hand-rolled Chainlit floating upload button collided with Chainlit's own header link at 1440 px — caught by screenshots, not assertions; replaced with the documented component.
+
+### Verification
+- [x] `docker compose -p assessment exec backend pytest` -> `161 passed, 12 skipped, 4 warnings in 62.95s`
+- [x] `docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py` -> `17 passed`
+- [x] `npm test --prefix frontend -- --runInBand` -> `21 passed`
+- [x] `npx tsc --noEmit` (frontend) -> clean
+- [x] `python3 -m unittest chainlit_app.tests.test_chat` -> `10 passed`
+- [x] `npx playwright test e2e/chat-ui.spec.ts` -> `16 passed` (real Chromium, both surfaces, 375/768/1024/1440)
+- [x] Both `http://localhost:3000/` and `http://localhost:8000/` checked live and screenshotted
+- [ ] `e2e/upload-chainlit-citation.spec.ts` live ingestion round trip
+- [ ] Clean-clone dry run
+- [ ] Real gold manual/CI score runs (corpus fetch/checksum/indexing/human verification still pending)
 
 ---
 

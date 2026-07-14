@@ -225,6 +225,23 @@ test.describe("upload entry point and layout integrity", () => {
       });
     });
 
+    test(`the documents page offers a visible way back to chat at ${viewport.width}x${viewport.height}`, async ({
+      page,
+    }) => {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      await page.goto("/documents");
+
+      // Below 1024px the sidebar is behind a hamburger, so the page itself must carry the
+      // route back to chat rather than relying on the menu.
+      const back = page.getByRole("link", { name: /Back to chat/i });
+      await expect(back).toBeVisible();
+      await expect(back).toBeInViewport();
+
+      await back.click();
+      await expect(page).toHaveURL(new RegExp(`${new URL(page.url()).origin}/?$`));
+      await expect(page.getByLabel("Ask a question about your documents")).toBeVisible();
+    });
+
     test(`Chainlit shows the + upload button at ${viewport.width}x${viewport.height}`, async ({
       page,
     }, testInfo) => {

@@ -1,20 +1,42 @@
 # Frontend
 
-This is the Next.js frontend for the Last Mile Health RAG platform. It provides the reviewer chat workspace at `/` and the document-management experience at `/documents`: upload validation, progress display, document polling, status rendering, and optimistic delete.
+The Next.js app for the Last Mile Health RAG platform. It serves the chat workspace at `/` and the document upload page at `/documents`.
 
-Chat is served by the separate Chainlit container on `localhost:8000`, which calls the backend `/api/v1/chat` contract and renders answer-level Chicago-style citation notes.
+## Chat-surface decision: both, alongside each other
+
+The starter allows Chainlit "in place of or alongside the Next.js frontend". **This build keeps both**, and they are equals:
+
+| Surface | URL | What it is |
+|---|---|---|
+| Next.js chat | http://localhost:3000/ | Chat workspace with sidebar navigation, a `+` upload button in the composer, and a responsive hamburger drawer |
+| Chainlit chat | http://localhost:8000/ | Equivalent chat surface with a `+ Upload PDF` button in its header |
+| Upload page | http://localhost:3000/documents | The single ingestion entry point. Both chat surfaces link to it. |
+
+Neither client implements retrieval, generation, or citation logic. Both `POST /api/v1/chat` and render the answer exactly as the backend presented it, plus the same `Sources` list built from the same citation metadata. **A behavioral difference between the two surfaces is a bug, not a feature of one of them.**
+
+Answer presentation lives in the backend (`backend/app/chat/response_presenter.py`) precisely because there are two clients: putting the writing-style and citation rules behind the API is what stops them from drifting apart.
 
 ## Reviewer Status
 
 | Area | Status | Notes |
 |---|---|---|
-| Root route | Complete | Native reviewer chat workspace wired to FastAPI `/api/v1/chat`. |
-| `/documents` route | Implemented | Public local UI exists for upload, progress, document polling, status display, and delete. Upload-to-indexed is covered by the Playwright smoke when the live stack is running. |
-| API helper layer | Verified complete for deterministic scope | `tests/documentsCore.test.mjs` covers base URL resolution, public/no-auth API calls, validation, upload progress, polling merge, optimistic delete, and rollback. |
-| Browser chat UI | Implemented in Next.js and Chainlit | The Next.js root chat and Chainlit both call FastAPI. Chainlit remains the cited-answer E2E target. |
-| Chicago citations | Implemented in Chainlit | Backend citation metadata is rendered as answer-level superscripts and notes. Per-sentence placement remains future work. |
-| Playwright | Scaffolded | `frontend/e2e/upload-chainlit-citation.spec.ts` covers upload, indexing, Chainlit question, table-derived value, and cited page note. |
-| Responsive browser pass | Not complete | Manual/browser checks at 375, 768, 1024, and 1440 px remain to be run. |
+| Chat route `/` | Complete | Active nav state, responsive drawer, loading row, duplicate-send prevention, superscripts linked to a `Sources` list, `+` upload button at every viewport. |
+| `/documents` route | Complete | Upload with progress, status polling, friendly status labels, optimistic delete with rollback. |
+| Helper layer | Verified | `tests/chatCore.test.mjs` and `tests/documentsCore.test.mjs` cover chat POST, answer block parsing, citation-marker splitting, reference lines, upload validation, progress, polling, and delete/rollback. |
+| Responsive browser pass | Complete | Real Chromium at 375x812, 768x1024, 1024x768, 1440x900. No overflow, no clipped controls, no overlap. |
+| Playwright | Complete for the chat UI | `e2e/chat-ui.spec.ts` -> 16 passed. `e2e/upload-chainlit-citation.spec.ts` still needs a live ingestion round trip. |
+
+## Accessibility
+
+- Sidebar collapses to a hamburger drawer at `<= 1024px`. The toggle carries `aria-expanded` and `aria-controls`, and has a visible focus ring.
+- The drawer closes on Escape, on selecting an internal link, and on clicking outside. The click-outside scrim is `aria-hidden` — it is a redundant affordance, and exposing it as a button would put a second control with the same label in the accessibility tree.
+- The current page is marked `aria-current="page"`. External services (Chainlit, API docs, health) never claim active state, because this app cannot know whether the user is looking at them.
+- The loading row is announced via `role="status"` inside an `aria-live="polite"` log.
+- The dot animation is disabled under `prefers-reduced-motion`.
+
+## Answer rendering
+
+Answers are rendered as **inert text**, never as HTML — a malicious PDF cannot inject markup through an answer. `parseAnswerBlocks` recovers only the paragraph/bullet structure the backend emitted, and `splitCitationMarkers` pulls out the superscript runs so each one can be rendered small and linked to its entry in the `Sources` list. An answer with no citations renders no `Sources` heading at all.
 
 ## Local Development
 
@@ -23,9 +45,9 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:3000 for the document-grounded chat workspace and http://localhost:3000/documents for the public document UI.
+Open http://localhost:3000 for chat and http://localhost:3000/documents to add a PDF.
 
-Set a non-default backend URL in `frontend/.env.local`:
+Point at a non-default backend in `frontend/.env.local`:
 
 ```sh
 NEXT_PUBLIC_API_BASE_URL=http://localhost:6100/api/v1
@@ -34,15 +56,18 @@ NEXT_PUBLIC_API_BASE_URL=http://localhost:6100/api/v1
 ## Tests
 
 ```sh
-npm test -- --runInBand
+npm test -- --runInBand          # 21 passed
+npx tsc --noEmit                 # typecheck
+
 npm run playwright:install
-PLAYWRIGHT_BASE_URL=http://localhost:3000 npm run test:e2e
+PLAYWRIGHT_BASE_URL=http://localhost:3000 \
+PLAYWRIGHT_CHAINLIT_BASE_URL=http://localhost:8000 \
+npm run test:e2e                 # 16 passed
 ```
 
-The current test suite uses Node's built-in test runner against `tests/documentsCore.test.mjs`. It covers upload validation, public/no-auth API helper behavior, upload progress, polling merge behavior, and optimistic delete/rollback.
+Deterministic tests use Node's built-in test runner. Playwright needs the stack running on ports 3000, 8000, and 6100, and browser binaries installed.
 
 ## Current Limitations
 
-- The chat message list and citation renderer live in Chainlit rather than Next.js.
-- Playwright requires a rebuilt live stack and installed browser binaries.
-- Browser/device responsive verification for 375, 768, 1024, and 1440 px remains a manual follow-up.
+- `e2e/upload-chainlit-citation.spec.ts` (upload → indexed → cited answer) has not been run in this pass; it needs a live ingestion round trip.
+- The chat UI mocks `/api/v1/chat` at the network boundary in `chat-ui.spec.ts` so rendering is deterministic. The real request path is covered by the backend integration suite instead.

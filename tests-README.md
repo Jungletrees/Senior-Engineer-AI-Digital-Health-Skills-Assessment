@@ -14,15 +14,75 @@ Automated tests are divided into three isolated, progressive layers:
 
 ## Current Reviewer Test Status
 
-| Tier | Status | Last known result / note |
+All results below are from the chat-UI/response-presentation buildrun on branch `codex/chat-ui-requirement-polish`.
+
+| Tier | Status | Command and last result |
 |---|---|---|
-| Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> `120 passed, 12 skipped, 4 warnings in 41.03s` in the verified BC16-BC28 run. |
-| Backend targeted corrective suites | Verified complete | Scheduler singleton, cost, rate-limit indexes, semantic-cache model scope, numeric grounding, anomaly detection, judge reproducibility, gold-standard, and `-m golden_set` suites passed in the verified BC16-BC28 run. |
-| Frontend deterministic suite | Verified complete | `npm test --prefix frontend -- --runInBand` passed; latest local run after production-gap changes: `1 passed`. |
-| Chainlit client tests | Added | `python3 -m unittest chainlit_app.tests.test_chat -v` covers citation rendering and backend client request construction. |
-| Playwright e2e | Scaffolded | `frontend/e2e/upload-chainlit-citation.spec.ts` covers upload-to-indexed-to-Chainlit citation smoke. Requires rebuilt local services and installed Playwright browser binaries. |
-| Real gold manual/CI score runs | Not trusted yet | Requires corpus fetch, TOFU checksum pinning, indexing, and human expected-answer verification before running score-floor checks. |
-| Clean-clone run | Not complete | Must be run from a fresh clone before claiming reviewer-ready reproducibility. |
+| Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> **`161 passed, 12 skipped, 4 warnings in 62.95s`** |
+| Backend RAG system integration suite | Verified complete (new) | `docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py -vv` -> **`17 passed`** |
+| Backend response presenter | Verified complete (new) | `docker compose -p assessment exec backend pytest app/tests/test_response_presenter.py -vv` -> **`19 passed`** |
+| Frontend deterministic suite | Verified complete | `npm test --prefix frontend -- --runInBand` -> **`21 passed`** |
+| Chainlit client tests | Verified complete | `python3 -m unittest chainlit_app.tests.test_chat -v` -> **`10 passed`** |
+| Playwright chat-UI e2e | Verified complete (new) | `npx playwright test e2e/chat-ui.spec.ts` -> **`16 passed`** in real Chromium, covering both chat surfaces at 375/768/1024/1440 px |
+| Playwright upload-to-citation e2e | Scaffolded, not run in this pass | `frontend/e2e/upload-chainlit-citation.spec.ts` needs a live stack with a real ingestion round trip |
+| Real gold manual/CI score runs | Not trusted yet | Requires corpus fetch, TOFU checksum pinning, indexing, and human expected-answer verification before score-floor checks mean anything |
+| Clean-clone run | Not complete | Must be run from a fresh clone before claiming reviewer-ready reproducibility |
+
+### What the new suites cover
+
+**`app/tests/test_rag_system_integration.py` (17 tests)** drives the real `/api/v1/chat` path against a real multi-document pgvector corpus — real hybrid search (vector + full-text + RRF), real compaction, the real conversation window, real guardrails, the real presenter, and the real caches. Only the cross-encoder (weights must not download) and hosted embeddings (network) are substituted; generation uses the production `DeterministicGenerationClient`, so the citation contract is exercised for real.
+
+| Concern | Test |
+|---|---|
+| Corpus synthesis | An answer spanning two documents cites both, numbered in first-appearance order |
+| No hallucinated sources | Every cited chunk id is one that retrieval actually returned, and exists in the database |
+| Off-corpus question | Returns a concise, uncited no-answer instead of a nearest-neighbour guess |
+| Exact cache | Second identical question is `exact_hit`, does not regenerate, and rebuilds the same source list |
+| Cache key normalization | Case and punctuation differences still hit the cache |
+| Semantic cache | A reworded question is served as `semantic_hit` without regenerating |
+| Cache hygiene | A filtered answer is never written to the cache |
+| Cost accounting | A generation is costed from model pricing; a cache hit costs zero tokens and zero dollars |
+| Prompt injection (document) | A hostile PDF's `</context>`, `System:`, `Assistant:`, and "ignore previous instructions" are neutralized before generation |
+| Prompt injection (question) | Asking the model to print its system prompt does not leak it |
+| System-prompt leak | An answer echoing the system prefix is filtered by the leak canary |
+| Numeric grounding | An unsupported dose (500 ml) is filtered rather than shown |
+| Rate limiting | The per-session limit returns 429 and is enforced *before* retrieval, generation, and the cache |
+| Compaction | A long document is held inside the token budget while keeping the sentence the question is about |
+| Sliding context window | Old turns are summarized away; recent turns are kept verbatim |
+| Idempotency | Concurrent duplicate questions generate exactly once |
+
+**`app/tests/test_response_presenter.py` (19 tests)** covers the presentation boundary: sentence-end superscripts, multi-source markers on one sentence, invalid `[cite:99]` markers dropped with no reference created, leading filename/document-name prefixes stripped, internal details (chunk ids, retrieval modes) removed, repeated caveats collapsed, paragraphs and bullets preserved, reference entries built from chunk metadata only (a model-invented reference list is discarded), concise no-answer with no citations, and a jargon guard on all user-facing copy.
+
+**`frontend/e2e/chat-ui.spec.ts` (16 tests, real Chromium)** covers active navigation state, the hamburger drawer opening/closing/Escape/close-on-navigate at 375/768/1024, the permanent sidebar at 1440, the loading row appearing on submit and being replaced by the answer, duplicate-send prevention, superscripts linked to a `Sources` list, a concise no-answer rendering no empty source list, and the `+` upload button being present with no horizontal overflow and no control overlap on **both** chat surfaces at all four viewports.
+
+**`chainlit_app/tests/test_chat.py` (10 tests)** covers the backend client request shape, the loading placeholder being sent and then replaced in place, reference rendering that mirrors the backend presenter, no empty source list on a refusal, the documented `[[UI.header_links]]` upload button, and a jargon guard on Chainlit copy.
+
+### Continuous integration (`.github/workflows/ci.yml`)
+
+A green local run proves very little about a reviewer's machine: a warm Docker cache hides missing architectures, missing system packages, and models downloaded at runtime — the failures a cold clone hits first. CI exists to close exactly that gap.
+
+| Job | What it proves |
+|---|---|
+| `frontend` | `npm ci` (so the lockfile is reproducible), `tsc --noEmit`, 21 deterministic tests, and a real `next build` |
+| `chainlit` | The 10 client tests pass with **no dependencies installed at all** — if this job ever needs a `pip install`, the test stubbing has leaked |
+| `backend` | `docker compose build --no-cache backend`, stack up, health wait (which also proves Alembic applies to an **empty volume**), reranker loads with `HF_HUB_OFFLINE=1` (no runtime model download), full pytest, the integration suite, and an Alembic `downgrade base` → `upgrade head` round trip |
+| `e2e` | `docker compose build --no-cache` for the **whole stack**, every service reaches health, then Playwright against both chat surfaces at all four viewports |
+| `verified` | An explicit `needs:` gate over all of the above, so nothing downstream can run while any check is red or skipped |
+
+The `--no-cache` builds are the point: they run on a GitHub-hosted runner, which is a machine that is not the author's and has no warm layers.
+
+### Viewport checks performed
+
+Real Chromium, both chat surfaces, screenshots reviewed:
+
+| Viewport | Next.js `:3000` | Chainlit `:8000` |
+|---|---|---|
+| 375 x 812 | Pass | Pass |
+| 768 x 1024 | Pass | Pass |
+| 1024 x 768 | Pass | Pass |
+| 1440 x 900 | Pass | Pass |
+
+No horizontal scrolling, no clipped controls, no overlapping text, and the composer is never covered. One defect was found this way and fixed: a hand-rolled floating upload button on Chainlit collided with Chainlit's own header link at 1440 px, which no assertion had caught — it was replaced with Chainlit's documented `[[UI.header_links]]` component.
 
 ---
 
@@ -114,6 +174,20 @@ Docker containers are pre-packaged with all required libraries (`poppler-utils`,
     docker compose -p assessment exec backend pytest app/tests/test_chat.py -vv
     ```
 
+*   **Run the response-presentation and citation verification:**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_response_presenter.py -vv
+    docker compose -p assessment exec backend pytest app/tests/test_chat.py -vv
+    ```
+
+*   **Run the full RAG system integration suite (multi-document corpus):**
+    ```sh
+    docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py -vv
+    ```
+    This exercises corpus synthesis, exact/semantic caching, cost accounting, prompt-injection
+    interception, rate limiting, context compaction, the sliding conversation window, and
+    idempotency against a real pgvector corpus.
+
 *   **Run BC21-BC28 corrective verification:**
     ```sh
     docker compose -p assessment exec backend pytest app/tests/test_scheduler_singleton.py -vv
@@ -162,6 +236,39 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC21-BC28 Corrective Tests:** Scheduler singleton tests verify Postgres advisory-lock execution and lock release. Cost/index/cache tests cover `MODEL_PRICING_JSON`, rate-limit indexes, and semantic-cache `embedding_model` scoping/drift cleanup. Numeric grounding tests enforce exact clinical numeric output matching, including 5 ml pass / 15 ml fail and tolerance ignored for generated answers. Anomaly/Judge/Gold tests cover cadence split, reproducible `JudgeAgent` metadata, SQLAlchemy-backed gold eval persistence, verified-question skipping, and rubric/deviation math. Deterministic tests inject fake chat and fake judge clients and never call hosted LLMs.
 
 ### 2.4 Current Cycle Verification Log
+
+Chat-UI and response-presentation buildrun (branch `codex/chat-ui-requirement-polish`):
+
+```text
+docker compose -p assessment exec backend pytest
+161 passed, 12 skipped, 4 warnings in 62.95s
+
+docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py -q
+17 passed in 21.50s
+
+npm test --prefix frontend -- --runInBand
+21 passed
+
+python3 -m unittest chainlit_app.tests.test_chat
+10 passed
+
+npx tsc --noEmit --prefix frontend
+clean
+
+PLAYWRIGHT_BASE_URL=http://localhost:3000 \
+PLAYWRIGHT_CHAINLIT_BASE_URL=http://localhost:8000 \
+npx playwright test e2e/chat-ui.spec.ts
+16 passed (real Chromium)
+
+curl -s http://localhost:6100/health
+{"status":"ok","database":"ok"}
+
+curl -s -o /dev/null -w "%{http_code}" -L http://localhost:3000/   -> 200
+curl -s -o /dev/null -w "%{http_code}" -L http://localhost:8000/   -> 200
+```
+
+Historical logs from earlier cycles follow.
+
 
 Latest BC9-BC11 targeted and full backend verification:
 

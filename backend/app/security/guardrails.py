@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
@@ -16,6 +17,8 @@ from app.core.errors import ValidationError
 from app.retrieval.models import RetrievalCandidate
 from app.security.numeric_grounding import numeric_claims_supported
 from app.settings import settings
+
+logger = logging.getLogger(__name__)
 
 SAFE_FALLBACK_MESSAGE = (
     "I could not confirm that answer against your documents, so I would rather not give it. "
@@ -219,6 +222,34 @@ def _replay_receive(messages: list[dict[str, Any]]) -> Receive:
         return {"type": "http.request", "body": b"", "more_body": False}
 
     return receive
+
+
+class UnhandledErrorMiddleware(BaseHTTPMiddleware):
+    """Turn an unhandled exception into a normal JSON 500 response.
+
+    Starlette's ServerErrorMiddleware sits *outside* CORSMiddleware, so an exception that
+    escapes the route is rendered into a bare 500 that never passes back through CORS. The
+    browser then reports "No 'Access-Control-Allow-Origin' header", which sends whoever is
+    debugging it hunting a CORS misconfiguration that does not exist. Catching the
+    exception here — inside CORS — means the error response carries the CORS headers and
+    the browser shows the real failure.
+    """
+
+    async def dispatch(self, request: Request, call_next):  # type: ignore[no-untyped-def]
+        try:
+            return await call_next(request)
+        except Exception:
+            logger.exception("unhandled_error path=%s method=%s", request.url.path, request.method)
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "error": {
+                        "code": "INTERNAL_ERROR",
+                        "message": "The server could not complete that request.",
+                        "details": {},
+                    }
+                },
+            )
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):

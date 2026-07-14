@@ -489,6 +489,28 @@ body {
   margin: 0 auto 20px;
 }
 
+/* The route back to chat, visible at every viewport rather than only in the sidebar. */
+.back-to-chat {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 40px;
+  margin-bottom: 14px;
+  padding: 0 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--accent-dark);
+  font-size: 0.9rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.back-to-chat:hover {
+  border-color: var(--accent);
+  background: var(--accent-soft, #edf8f3);
+}
+
 .documents-header h1 {
   margin: 0 0 6px;
   font-size: 1.6rem;

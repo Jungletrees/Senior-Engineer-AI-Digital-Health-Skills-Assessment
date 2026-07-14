@@ -219,6 +219,31 @@ async def test_security_headers_and_configured_cors() -> None:
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
 
 
+@pytest.mark.asyncio
+async def test_a_server_error_still_carries_cors_headers() -> None:
+    """A 500 must not masquerade as a CORS failure in the browser.
+
+    Starlette's error handler sits outside CORSMiddleware, so an unhandled exception would
+    otherwise return a bare 500 with no `Access-Control-Allow-Origin`. The browser then
+    reports a CORS policy violation, sending whoever is debugging it after a
+    misconfiguration that does not exist instead of the real server error.
+    """
+    from app.main import app
+
+    @app.get("/__boom")
+    async def _boom():  # type: ignore[no-untyped-def]
+        raise RuntimeError("database is gone")
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/__boom", headers={"Origin": "http://localhost:3000"})
+
+    assert response.status_code == 500
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    assert response.json()["error"]["code"] == "INTERNAL_ERROR"
+    # The real cause is logged, never returned to the caller.
+    assert "database is gone" not in response.text
+
+
 def _chat_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
     app.add_exception_handler(AppError, app_error_handler)

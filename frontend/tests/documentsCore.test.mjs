@@ -23,6 +23,20 @@ test("/documents page contains dropzone and empty state copy", async () => {
   assert.match(source, /No documents yet/);
 });
 
+test("/documents page always offers a way back to chat", async () => {
+  const source = await readFile(new URL("../src/app/documents/page.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/app/globals.css", import.meta.url), "utf8");
+
+  assert.match(source, /className="back-to-chat"/);
+  assert.match(source, /Back to chat/);
+  assert.match(source, /<Link href="\/"/);
+
+  // It lives in the page header, not the sidebar, so it survives the hamburger collapse
+  // at tablet/mobile widths where the sidebar is hidden behind a menu.
+  assert.match(css, /\.back-to-chat \{/);
+  assert.doesNotMatch(css, /\.back-to-chat[^{]*\{[^}]*display:\s*none/);
+});
+
 test("upload limits drive MIME and size validation before network", () => {
   const wrongMime = { type: "text/plain", size: 1 };
   const oversized = { type: "application/pdf", size: 2 * 1024 * 1024 };

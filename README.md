@@ -4,24 +4,70 @@ This repository implements a clinical-document retrieval-augmented generation sy
 
 The backend is the source of truth for ingestion, retrieval, generation, guardrails, caching, scheduling, and gold-standard evaluation. Uploaded PDFs are validated and stored through the API, then the upload route visibly enqueues the ingestion worker to parse page metadata, chunk content, embed text, and index into PostgreSQL/pgvector. Chat requests run through input validation, exact/semantic cache lookup, hybrid retrieval, local cross-encoder reranking, optional query expansion, grounded answer generation, structured citation assembly, output filtering, and audit logging.
 
-The implementation is submission-ready for the deterministic backend/document-ingestion scope. The production-gap closure pass adds Chainlit-to-`/api/v1/chat` wiring, answer-level Chicago-style citation notes, a native Next.js chat workspace, public local document upload/list/delete routes, and a Playwright smoke scaffold. Real gold-evaluation score floors remain trust-gated until corpus download/checksum/indexing and human expected-answer verification are complete.
+Answers are grounded in the uploaded documents and carry Chicago-style superscript citations at the end of each sentence they support, with a `Sources` list built from document metadata rather than model text. Two chat surfaces are supported and behave identically: Next.js on `:3000` and Chainlit on `:8000`. Real gold-evaluation score floors remain trust-gated until corpus download/checksum/indexing and human expected-answer verification are complete.
 
 ## Reviewer Build Status
 
 | Workstream | Status | Evidence / reviewer note |
 |---|---|---|
-| BC16-BC28 backend corrective scope | Verified complete for deterministic scope | Last known full backend run: `120 passed, 12 skipped, 4 warnings`; targeted scheduler, cost, cache, numeric grounding, anomaly, judge, and gold-standard tests passed. |
+| Backend deterministic suite | Verified complete | Full backend run: `161 passed, 12 skipped, 4 warnings in 62.95s`. |
 | FastAPI health/docs | Complete | `/health` returns `{"status":"ok","database":"ok"}` in the last smoke test; OpenAPI is available at `/docs`. |
 | Documents API validation/storage | Complete for local public route contract | Upload validation, storage, dedup, list, poll, delete, and background worker enqueueing are implemented without IAM/JWT gating; deterministic route tests assert public access plus worker scheduling for new uploads and no reschedule for indexed duplicates. |
 | Ingestion worker | Verified complete in deterministic tests | Worker path indexes a `processing` document, persists chunks/page images, and marks it `indexed` under fake clients. |
 | Backend `/api/v1/chat` | Verified complete for backend contract | Idempotency, rate limit, cache ordering, retrieval/generation, filtering, audit, `source_chunk_ids`, and structured citation metadata are tested. |
-| Chainlit chat UI | Implemented, live smoke pending in this pass | Chainlit posts to `/api/v1/chat`, preserves backend session IDs, handles in-flight/unavailable responses, and renders citation notes from backend metadata. |
-| Chicago superscript citations | Implemented as answer-level notes | Backend returns document title, chunk ID, page number, section path, and snippet. Chainlit appends superscript markers and Chicago-style notes. Per-sentence multi-source citation placement remains a future refinement. |
-| Frontend `/documents` UI | Partial pending live browser pass | Deterministic helper tests pass; Playwright now covers upload-to-indexed in a live stack, but responsive breakpoint review still needs manual/browser confirmation. |
-| Playwright e2e | Scaffolded | `@playwright/test`, config, and an upload-to-Chainlit citation smoke spec are present. Browser binaries must be installed in the execution environment. |
+| Chat surfaces (Next.js + Chainlit) | Verified complete | Both are supported and behaviorally identical over the same `/api/v1/chat` contract. Verified in real Chromium at 375/768/1024/1440 px. |
+| Response presentation | Verified complete | `backend/app/chat/response_presenter.py` owns every writing-style and citation rule; 19 deterministic tests. Answers never open with a filename and never expose internals. |
+| Chicago superscript citations | Verified complete, per sentence | Generation emits `[cite:n]` markers; the presenter validates them against backend candidates, places superscripts at the end of the sentence they support, drops invalid markers, and builds the reference list from chunk metadata only. |
+| RAG system integration | Verified complete | 17 tests over a real multi-document pgvector corpus covering synthesis, caching, cost, prompt injection, rate limits, compaction, and the sliding context window. |
+| Frontend `/documents` UI | Verified complete | Upload, progress, polling, friendly status labels, optimistic delete with rollback. |
+| Playwright e2e | Verified complete for the chat UI | `e2e/chat-ui.spec.ts` -> 16 passed in real Chromium. The upload-to-cited-answer spec still needs a live ingestion round trip. |
 | Gold-standard workflow | Implemented, not yet trusted with real scores | Runner, persistence, rubric, reports, and deterministic tests exist; real scores require corpus fetch, checksum pinning, indexing, and human expected-answer verification. |
 | Clean-clone validation | Not complete | A clean clone has not been run for this checklist pass. |
 | AWS deployment | Planned | AWS architecture, Lambda/Bedrock rationale, security, and CI/CD plan are documented; no live deployment or IaC exists. |
+
+## Assumptions
+
+The brief invites noting assumptions rather than leaving them implicit. These are the ones this build makes; the full list, with reasoning, is in [ARCHITECTURE (4).md §21](<./build-plans-architecture/ARCHITECTURE (4).md>).
+
+**Input**
+
+- **PDF is the only accepted format.** Upload validation checks PDF magic bytes and the MIME allow-list; ingestion, page rasterization, OCR fallback, and page-number citations are all built around a paginated document. Other formats are rejected at the API boundary rather than partially supported.
+- **Documents are text-bearing or OCR-able, and predominantly English.** Full-text search uses PostgreSQL's `english` configuration, so stemming assumes English. A PDF that is neither extractable nor OCR-able yields "I could not find that in your documents" rather than a wrong answer.
+- **A document is immutable once uploaded.** Re-uploading a changed file creates a new document id. Cache invalidation depends on this.
+- **One shared corpus, not per-user libraries.** Every uploaded document is visible to every chat session on the instance.
+
+**Answers**
+
+- **No answer is better than a guessed one.** This is clinical guidance, so an invented dose is worse than an admission of ignorance. An answer whose citations do not survive validation becomes a concise no-answer, and numeric claims must match the cited source exactly (tolerance `0.0`) or they are filtered.
+- **The model cites; the application writes the reference list.** Generation emits `[cite:n]` markers pointing at context blocks the backend supplied. Titles, page numbers, and reference entries come from chunk metadata only, so the model cannot invent a source or a page. Markers referencing unknown ids are dropped.
+- **Retrieved-and-cited does not mean relevant.** Lexical grounding proves an answer's words came from a source, not that the source answers the question — a "snake bite" question can truthfully quote a malaria document. Relevance is checked separately, and grounding alone is not treated as sufficient.
+- **A document title is derived from its filename**, so a poorly named upload produces a poorly named reference.
+
+**Deployment**
+
+- **The local reviewer stack is not the production security posture.** Document routes are public and chat is anonymous so the stack runs without provisioning auth. The JWT path still exists and is tested; production is assumed to enable it and scope documents per tenant.
+- **Ingestion is in-process and best-effort.** Upload enqueues a FastAPI background task, not a durable queue, so a restart mid-ingestion leaves a document in `processing` and it must be re-uploaded. A queue-backed worker is the named production replacement.
+- **Users are not retrieval engineers.** User-visible copy never mentions chunks, indexes, retrieval modes, or grounding; internal vocabulary is treated as a leak and is enforced against by tests.
+
+**Environment** — full table with mitigations in [local-setup.md](./local-setup.md#environment-requirements-and-known-portability-risks)
+
+- **~10 GB free disk, 4 GB free RAM, and network for the first build.** Images total ~5.7 GB (backend is 2.92 GB, dominated by torch); a measured cold `--no-cache` backend build took **20m 01s**. Runtime memory is small (~450 MB across all containers). No GPU is used.
+- **Ports 3000, 5432, 6100, 8000 must be free.** 5432 is the realistic collision, with a developer's own PostgreSQL.
+- **x86_64 and arm64 are both supported, but only x86_64 has been executed.** `torch==2.9.1+cpu` exists only for x86_64, so the pin is now architecture-conditional; the arm64 path is a reasoned fix, not a verified one.
+- **Running `pytest` wipes the database.** The fixtures migrate down to base against the same database the running stack uses, so the test suite deletes any documents you uploaded.
+- **A green local run is not evidence of portability.** A warm Docker cache hides the failures a reviewer hits first, which is why CI builds every image `--no-cache` from a clean checkout.
+
+## Chat Surfaces
+
+Both chat surfaces are supported, which the starter explicitly allows ("may be used in place of or alongside the Next.js frontend").
+
+| Surface | URL | Role |
+|---|---|---|
+| Next.js chat | http://localhost:3000/ | Full chat workspace with document navigation, a `+` upload button, and a responsive sidebar |
+| Chainlit chat | http://localhost:8000/ | Equivalent chat surface with a `+ Upload PDF` header button |
+| Upload page | http://localhost:3000/documents | The single ingestion entry point; both chat surfaces link to it |
+
+Neither client implements retrieval, generation, or citation logic. Both call `/api/v1/chat` and render the same presented answer and the same source list, so a behavioral difference between them is a bug, not a feature of one surface. Use whichever you prefer.
 
 ## Architecture Summary
 
@@ -121,17 +167,17 @@ curl -I http://localhost:8000
 Last known green verification from the verified branch state:
 
 ```text
-python3 -m compileall backend/app gold_standard
-passed
-
-docker compose -p assessment build backend
-passed
-
 docker compose -p assessment exec backend pytest
-120 passed, 12 skipped, 4 warnings in 41.03s
+161 passed, 12 skipped, 4 warnings in 62.95s
 
 npm test --prefix frontend -- --runInBand
-1 passed
+21 passed
+
+python3 -m unittest chainlit_app.tests.test_chat
+10 passed
+
+npx playwright test e2e/chat-ui.spec.ts   (real Chromium, both chat surfaces)
+16 passed
 
 backend health smoke
 {"status":"ok","database":"ok"}
@@ -248,7 +294,11 @@ Amazon Bedrock should be the production model-governance layer where available. 
 
 ## CI/CD Plan
 
-There is no `.github/workflows/` directory in the current repository, so CI/CD is planned rather than active.
+CI is active: `.github/workflows/ci.yml` builds every image with `docker compose build --no-cache` from a clean checkout on a GitHub-hosted runner, brings the full stack up, waits for health (which also proves Alembic migrations apply to an empty volume), asserts the reranker loads offline from the image, then runs the backend suite, the RAG integration suite, an Alembic down/up round trip, and Playwright against both chat surfaces. A `verified` job gates on all of them.
+
+This is what answers "will it build on the reviewer's machine" — a green local run does not, because a warm Docker cache hides missing architectures, missing system packages, and runtime model downloads.
+
+CD is planned rather than active; there is no IaC and no target environment yet.
 
 Recommended pipeline:
 

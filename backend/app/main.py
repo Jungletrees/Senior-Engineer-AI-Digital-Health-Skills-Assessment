@@ -8,7 +8,11 @@ from app.api.v1.config import router as config_router
 from app.core.errors import AppError, app_error_handler
 from app.home.routes import router as home_router
 from app.documents.routes import router as documents_router
-from app.security.guardrails import InputValidationMiddleware, SecurityHeadersMiddleware
+from app.security.guardrails import (
+    InputValidationMiddleware,
+    SecurityHeadersMiddleware,
+    UnhandledErrorMiddleware,
+)
 from app.scheduling.cache_scheduler import start_schedulers, stop_schedulers
 from app.settings import settings
 
@@ -25,6 +29,11 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan)
 app.add_exception_handler(AppError, app_error_handler)
 
+# Middleware added first is innermost. UnhandledErrorMiddleware must sit INSIDE
+# CORSMiddleware: an exception that escapes it would be rendered by Starlette's outermost
+# error handler, which never passes back through CORS, and the browser would then report a
+# phantom "No 'Access-Control-Allow-Origin' header" instead of the actual server error.
+app.add_middleware(UnhandledErrorMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_allowed_origin_list,

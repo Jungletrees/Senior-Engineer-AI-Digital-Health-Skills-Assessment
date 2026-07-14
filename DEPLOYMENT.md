@@ -1,6 +1,26 @@
 # Production Deployment Plan
 
-This document is the production deployment plan for the Last Mile Health RAG platform. It is not evidence that the system is already deployed. The repository currently contains Docker/Compose assets, but no Terraform/CDK/CloudFormation stack and no `.github/workflows/` directory.
+This document is the production deployment plan for the Last Mile Health RAG platform. It is a plan, not evidence of a deployment: there is no Terraform/CDK/CloudFormation stack and nothing is deployed. What *does* exist is CI — `.github/workflows/ci.yml` builds every image with `--no-cache` from a clean checkout, brings the full stack up, and runs every suite, so the build-and-test half of the pipeline below is real and running. The deploy half is design.
+
+Contents: [cloud provider choice](#cloud-provider-choice) · [target architecture](#target-aws-architecture) · [compute](#lambda-compute-rationale) · [models and cost](#bedrock-model-switching-and-cost-optimization) · [environments](#environments-and-configuration) · [CI/CD](#cicd-strategy) · [reliability](#reliability-and-scalability) · [observability](#observability-and-slos) · [security](#security) · [disaster recovery](#disaster-recovery) · [data and migrations](#migration-and-data-strategy) · [open items](#known-gaps-and-open-items)
+
+## Cloud Provider Choice
+
+**Choice: AWS.** The decision is driven by one hard requirement and one soft one.
+
+The hard requirement is **managed PostgreSQL with `pgvector`**. Retrieval, the caches, audit logs, and evaluation all live in one PostgreSQL database, and the vector index is a pgvector HNSW index in that same database. A provider that cannot run pgvector on its managed PostgreSQL would force either a self-managed database or a separate vector store — the second option splits the transactional boundary that currently makes "retrieve, filter, cache, audit" a single consistent unit, which is a real architectural loss, not a procurement detail.
+
+The soft requirement is a **managed model layer with per-model cost attribution**, because `MODEL_PRICING_JSON`, the nightly `JudgeAgent` grading, and the anomaly/cost alerts all assume model spend is attributable per call.
+
+| Provider | Fit | Why not chosen |
+|---|---|---|
+| **AWS** (chosen) | RDS PostgreSQL supports `pgvector`; Fargate runs the current containers unchanged; Bedrock centralizes model access, permissions, and billing; S3/KMS/Secrets Manager/CloudWatch cover the rest | — |
+| GCP | Cloud SQL supports `pgvector`; Cloud Run is a good fit for these containers; Vertex AI is a credible Bedrock equivalent | A genuinely viable alternative. Not chosen on technical grounds — AWS is assumed as the incumbent. If the organization is GCP-first, this plan ports almost one-for-one: Cloud Run for Fargate, Cloud SQL for RDS, GCS for S3, Secret Manager for Secrets Manager, Vertex for Bedrock. |
+| Azure | Azure Database for PostgreSQL supports `pgvector`; Container Apps and Azure OpenAI are the equivalents | Same as GCP: viable, not chosen. Would be the right answer in a Microsoft-first organization. |
+| Fly.io / Render / Railway | Would run the compose stack with very little work | No managed pgvector story that meets the backup/Multi-AZ/PITR bar below, and no model-governance layer. Fine for a demo, not for clinical guidance data. |
+| Self-managed Kubernetes | Maximum control | Operational overhead is not justified by this system's scale, and buys nothing the managed services do not already give. |
+
+**What would change this decision:** if the model provider had to be Anthropic's API directly (rather than through Bedrock), the provider choice would weaken to "wherever the database and containers are cheapest to operate", because the model layer would no longer be an AWS-native concern. The architecture keeps the generation client behind a `GenerationClient` protocol precisely so that swap is a configuration change, not a rewrite.
 
 ## Target AWS Architecture
 
@@ -104,21 +124,110 @@ Cost controls:
 - Audit logs, `query_audit_log`, `agent_trace_log`, `response_grade`, and `anomaly_flag` support investigation.
 - PII/sensitive-output guardrails should be kept before response send and before cache writes.
 
-## CI/CD Plan
+## Environments and Configuration
 
-No GitHub Actions workflows are currently present. The intended pipeline is:
+Three environments, ideally as **separate AWS accounts** (blast-radius isolation is worth more than the account-management overhead), or at minimum separate VPCs, databases, secrets, and buckets.
 
-1. PR checks run backend `pytest`, frontend `npm test`, lint/typecheck where configured, Docker backend build, and Alembic migration validation.
-2. Main branch deployment is gated with explicit `needs:` dependencies on all required checks.
-3. Containers are built and pushed to Amazon ECR.
-4. Infrastructure is deployed with Terraform, CDK, or CloudFormation.
-5. Alembic migrations run as a one-off task against the target environment before backend rollout.
-6. Environments are separated into dev, staging, and prod with distinct AWS accounts or at least distinct VPCs/secrets/databases.
-7. Production requires manual approval.
-8. Secrets are injected from Secrets Manager or SSM at runtime.
-9. Post-deploy smoke tests hit `/health`, OpenAPI docs, a minimal upload path, and a minimal chat path.
-10. Rollback returns services to the previous image/task definition and, when necessary, restores from RDS point-in-time recovery.
-11. Gold-eval floor gating can be added after corpus PDFs are pinned, indexed, and expected answers are human-verified.
+| Environment | Purpose | Data | Model access |
+|---|---|---|---|
+| `dev` | Integration of merged work | Synthetic PDFs only | Cheap/fast model; low budget cap |
+| `staging` | Release candidate; migration rehearsal; gold-eval runs | Production-like, de-identified | Same models as prod, lower quota |
+| `prod` | Live | Real clinical documents | Full routing policy |
+
+Configuration is environment-driven, never baked into images. Every setting in `backend/app/settings.py` is overridable by env var; secrets (`ANTHROPIC_API_KEY`, `JWT_SECRET`, `DATABASE_URL`, …) come from Secrets Manager/SSM at task start. Settings that **must** be changed from their local defaults before production:
+
+- `ANONYMOUS_CHAT_ALLOWED=false` and a real `JWT_SECRET` — the local reviewer stack runs chat anonymously and document routes publicly (see Assumptions in the README); production must not.
+- `CORS_ALLOWED_ORIGINS` — explicit origins only, never `*`.
+- `ENABLE_SCHEDULED_JOBS` — on in exactly one environment per database, guarded by the advisory-lock singleton.
+- `UPLOAD_STORAGE_BACKEND=s3` / `PAGE_IMAGE_STORAGE_BACKEND=s3` — container filesystems are ephemeral.
+- `EMBEDDING_DIM` must match the deployed schema. Changing the embedding model is a **re-index**, not a config flip: the pgvector column is fixed-width and the semantic cache is scoped by `embedding_model` precisely so a model change cannot silently compare vectors across models.
+
+## CI/CD Strategy
+
+**The build/test half of this pipeline exists** in `.github/workflows/ci.yml` (jobs: `frontend`, `chainlit`, `backend`, `e2e`, gated by `verified`). **The deploy half does not** — there is no IaC and no target environment yet. The stages below marked *(planned)* are design; the rest are running today.
+
+**Branching.** Trunk-based: short-lived branches into `master`, every merge is a release candidate. Tags cut releases; images are tagged with the commit SHA (never `latest`) so a rollback is an unambiguous pointer to a previously-passing artifact.
+
+**Pipeline stages.** The important property is that **deploy is reachable only through explicit `needs:` gates** — a green deploy must be impossible while any check is red or skipped.
+
+```
+on PR ──────────────────────────────────────────────────────────────
+  lint + typecheck        (ruff/mypy; tsc --noEmit; eslint)
+  backend tests           (pytest, incl. migrations up/down + integration suite)
+  frontend tests          (node --test)
+  chainlit tests          (unittest)
+  docker build            (backend + frontend + chainlit images build at all)
+  migration check         (alembic upgrade head, then downgrade base, on a throwaway DB)
+
+on merge to master ─────────────────────────────────────────────────
+  ▸ all of the above         (needs: [...] — no bypass)
+  ▸ build + push to ECR      (tag = git SHA)
+  ▸ deploy dev               (terraform apply; migrate; smoke)
+  ▸ e2e on dev               (Playwright against the deployed stack)
+  ▸ deploy staging           (needs: e2e)
+  ▸ gold-eval floor          (needs: staging — see gating caveat below)
+  ▸ manual approval          (environment protection rule)
+  ▸ deploy prod              (migrate → rolling deploy → smoke → auto-rollback on failure)
+```
+
+**Migrations are a separate, ordered step, not a container entrypoint.** Alembic runs as a one-off ECS task against the target database *before* the new image rolls out, and the deploy fails closed if it fails. Because rolling deploys briefly run old and new code together, migrations must be **backward-compatible**: add columns/tables in one release, backfill, and only drop in a later release once no running code reads them. Migration `0014` (adding `source_chunk_ids` to both cache tables) is an example of the safe shape — additive, with a default, so old code ignores it and new code populates it.
+
+**Deployment strategy.** Rolling update on ECS with a health-check grace period and circuit breaker enabled, so a task that fails `/health` rolls back automatically. Blue/green via CodeDeploy is the upgrade path if a zero-downtime cutover with instant rollback becomes a requirement; it is not justified at current scale.
+
+**Post-deploy smoke tests** (the deploy is not "done" until these pass): `/health` returns database-ok; `/docs` serves; a synthetic PDF uploads and reaches `indexed`; a chat question against that PDF returns a cited answer; a question outside it returns the no-answer. That last check is the one that catches a broken grounding path, which no unit test can catch in a live environment.
+
+**Rollback.** Redeploy the previous task definition (previous image SHA). If a migration must be undone, restore from RDS point-in-time recovery — which is why migrations run in staging first and why a snapshot is taken before any destructive migration.
+
+**Gold-eval gating caveat.** A score floor (`python -m gold_standard.runner --trigger ci --floor 85`) is designed for the pipeline, but **must not be enabled as a merge gate yet**: the corpus PDFs are not fetched or checksum-pinned and the expected answers are not human-verified, so the score it produces is not yet meaningful. Turning it on before that would be a gate that fails or passes for reasons unrelated to quality. It becomes a real gate once §Gold-Standard Evaluation's prerequisites are met.
+
+**Supply chain.** Pin base images by digest; run `pip install` from a lockfile; scan images (ECR scanning or Trivy) and fail the build on critical CVEs; require signed commits on `master`.
+
+## Observability and SLOs
+
+The system already writes the data these need — `query_audit_log`, `agent_trace_log`, `response_grade`, `anomaly_flag`, and the `agentops_summary` view — so this is dashboards and alarms over existing tables, not new instrumentation.
+
+| Signal | Target | Alarm |
+|---|---|---|
+| `/api/v1/chat` p95 latency | < 5s (cache miss), < 500ms (cache hit) | p95 > 8s for 10 min |
+| 5xx rate | < 0.5% | > 2% for 5 min |
+| Availability | 99.5% | two consecutive `/health` failures |
+| Cache hit rate | > 30% steady-state | sustained drop (usually means cache invalidation is misfiring) |
+| Grounding-failure rate | tracked, not fixed | sharp rise — a model or corpus change is producing ungrounded answers |
+| Model spend | within budget | AWS Budgets + CloudWatch anomaly detection on cost |
+| Gold-eval score | no regression | deviation alert vs. rolling baseline |
+
+The two alarms that matter most for *this* system are the last three: they are the ones that catch the failure mode where the system is fully "up" and confidently wrong. Ordinary latency/5xx alarms would not fire at all in that scenario.
+
+## Disaster Recovery
+
+- **RPO ≤ 5 minutes**, **RTO ≤ 1 hour**, achieved with RDS automated backups plus point-in-time recovery, and S3 versioning for PDFs and page images.
+- RDS Multi-AZ for automatic failover on instance/AZ loss.
+- **Restore is rehearsed, not assumed**: a scheduled job restores the latest snapshot into a scratch database and asserts row counts and `alembic current`. An untested backup is not a backup.
+- The database is the only stateful component. Application tasks are stateless and disposable; sessions, caches, audit, and grading all live in PostgreSQL, so recovery is a database recovery plus a redeploy.
+- Uploaded PDFs are the one input that cannot be regenerated — S3 versioning plus cross-region replication for prod.
+
+## Cost Model
+
+At the assessment's scale (single-digit thousands of documents, low query volume), the floor is dominated by always-on infrastructure rather than model spend:
+
+| Item | Driver | Control |
+|---|---|---|
+| RDS (Multi-AZ) | Always-on; the largest fixed cost | Right-size the instance; single-AZ in dev/staging |
+| Fargate tasks | Backend + frontend + Chainlit baseline | Scale-to-low overnight in non-prod |
+| Model calls | Per token, per model | Exact + semantic caches, prompt caching, and cheap-model routing for summaries/expansion/grading |
+| S3 + CloudWatch | Volume of PDFs, page images, logs | Lifecycle rules; log retention limits |
+
+The caches are a cost control, not just a latency control: an exact-cache hit costs zero tokens, which is why cache-hit rate is on the dashboard above. Ingestion cost scales with pages (OCR/rasterization), not with queries, so a large upload is a one-off spike rather than a recurring cost.
+
+## Known Gaps and Open Items
+
+Named rather than hidden, since none of this is deployed yet:
+
+1. No IaC exists. Terraform (or CDK) for VPC, RDS, ECS, S3, IAM, Secrets Manager, ALB/WAF, and CloudWatch is the first build task.
+2. No `.github/workflows/`. The pipeline above is a design, not a running system.
+3. Ingestion is a FastAPI background task, not a durable queue. A restart mid-ingestion strands a document in `processing`. Replacing it with S3-event → SQS → worker is the first production-hardening change, and the document status guard is already idempotent enough to support it.
+4. Gold-eval score floors are not trustworthy until the corpus is fetched, checksum-pinned, indexed, and expected answers are human-verified.
+5. A clean-clone reproducibility run has not been performed.
 
 ## Migration and Data Strategy
 
