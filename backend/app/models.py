@@ -176,6 +176,11 @@ class ExactCache(Base):
     query_hash: Mapped[str] = mapped_column(CHAR(64), primary_key=True)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     source_doc_ids: Mapped[list[UUID] | None] = mapped_column(ARRAY(PGUUID(as_uuid=True)))
+    source_chunk_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(PGUUID(as_uuid=True)),
+        nullable=False,
+        server_default=text("'{}'"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
@@ -193,6 +198,11 @@ class SemanticCache(Base):
     representative_query: Mapped[str] = mapped_column(Text, nullable=False)
     answer: Mapped[str] = mapped_column(Text, nullable=False)
     source_doc_ids: Mapped[list[UUID] | None] = mapped_column(ARRAY(PGUUID(as_uuid=True)))
+    source_chunk_ids: Mapped[list[UUID]] = mapped_column(
+        ARRAY(PGUUID(as_uuid=True)),
+        nullable=False,
+        server_default=text("'{}'"),
+    )
     hit_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())

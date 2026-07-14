@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import string
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
@@ -23,6 +23,9 @@ class CacheHit:
     source_doc_ids: list[UUID]
     cache_status: str
     similarity: float | None = None
+    # Cached answers carry sentence-end superscripts, so the reference list must be
+    # rebuildable from chunk metadata on a hit.
+    source_chunk_ids: list[UUID] = field(default_factory=list)
 
 
 def normalize_query(query: str) -> str:
@@ -40,7 +43,7 @@ async def lookup_exact_cache(db: AsyncSession, query: str) -> CacheHit | None:
         await db.execute(
             text(
                 """
-                SELECT answer, source_doc_ids
+                SELECT answer, source_doc_ids, source_chunk_ids
                 FROM exact_cache
                 WHERE query_hash = :query_hash
                   AND expires_at > now()
@@ -55,6 +58,7 @@ async def lookup_exact_cache(db: AsyncSession, query: str) -> CacheHit | None:
         answer=str(row["answer"]),
         source_doc_ids=list(row["source_doc_ids"] or []),
         cache_status="exact_hit",
+        source_chunk_ids=list(row["source_chunk_ids"] or []),
     )
 
 
@@ -64,6 +68,7 @@ async def write_exact_cache(
     answer: str,
     source_doc_ids: list[UUID],
     eligible: bool,
+    source_chunk_ids: list[UUID] | None = None,
 ) -> None:
     """Write an exact-cache row if the answer is cache-eligible."""
     if not eligible:
@@ -72,12 +77,13 @@ async def write_exact_cache(
     await db.execute(
         text(
             """
-            INSERT INTO exact_cache (query_hash, answer, source_doc_ids, expires_at)
-            VALUES (:query_hash, :answer, :source_doc_ids, :expires_at)
+            INSERT INTO exact_cache (query_hash, answer, source_doc_ids, source_chunk_ids, expires_at)
+            VALUES (:query_hash, :answer, :source_doc_ids, :source_chunk_ids, :expires_at)
             ON CONFLICT (query_hash)
             DO UPDATE SET
                 answer = EXCLUDED.answer,
                 source_doc_ids = EXCLUDED.source_doc_ids,
+                source_chunk_ids = EXCLUDED.source_chunk_ids,
                 created_at = now(),
                 expires_at = EXCLUDED.expires_at
             """
@@ -86,6 +92,7 @@ async def write_exact_cache(
             "query_hash": query_hash(query),
             "answer": answer,
             "source_doc_ids": source_doc_ids,
+            "source_chunk_ids": list(source_chunk_ids or []),
             "expires_at": expires_at,
         },
     )

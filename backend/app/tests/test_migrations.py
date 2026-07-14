@@ -82,7 +82,7 @@ def test_alembic_upgrade_head_and_downgrade_base_cleanly() -> None:
             )
         ).scalar_one()
 
-    assert current_revision == "0013_correctives"
+    assert current_revision == "0014_cache_chunk_ids"
     assert table_count == 13
     assert view_exists is True
     assert client_ip_exists is True

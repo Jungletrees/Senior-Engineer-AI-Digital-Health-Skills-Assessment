@@ -20,6 +20,17 @@ from app.cache.exact import lookup_exact_cache, write_exact_cache
 from app.cache.exact import CacheHit
 from app.cache.semantic import lookup_semantic_cache, write_semantic_cache
 from app.chat.conversation import load_conversation_context
+from app.chat.response_presenter import (
+    NO_ANSWER_MESSAGE,
+    REFERENCES_HEADING,
+    RETRIEVAL_UNAVAILABLE_MESSAGE,
+    UPLOAD_FIRST_MESSAGE,
+    CitationCandidate,
+    build_citation_candidates,
+    citation_snippet,
+    document_display_title,
+    present_answer,
+)
 from app.chainlit_steps import chainlit_step
 from app.core.cost import compute_cost
 from app.core.errors import RateLimitExceededError, ValidationError
@@ -33,11 +44,6 @@ from app.settings import settings
 
 router = APIRouter(prefix="/api/v1", tags=["chat"])
 
-UPLOAD_FIRST_MESSAGE = "Upload and index a PDF before starting chat so I can answer from your documents."
-RETRIEVAL_UNAVAILABLE_MESSAGE = (
-    "Retrieval is temporarily unavailable, so I cannot produce a grounded answer for this question."
-)
-
 
 class ChatRequest(BaseModel):
     message: str = Field(min_length=1)
@@ -49,9 +55,11 @@ class Citation(BaseModel):
     chunk_id: UUID
     document_id: UUID
     document_title: str
+    document_filename: str
     page_number: int | None = None
     section_path: str | None = None
     snippet: str | None = None
+    reference: str
 
 
 class ChatResponse(BaseModel):
@@ -60,6 +68,7 @@ class ChatResponse(BaseModel):
     cache_status: str
     source_chunk_ids: list[UUID]
     citations: list[Citation] = Field(default_factory=list)
+    references_heading: str = REFERENCES_HEADING
     query_audit_log_id: UUID
     output_filter_status: str
     output_filter_reason: str | None = None
@@ -123,6 +132,7 @@ async def chat(
             payload.message,
             cache_hit.answer,
             cache_hit.cache_status,
+            cache_hit.source_chunk_ids,
         )
 
     indexed_count = await _indexed_document_count(db)
@@ -163,24 +173,40 @@ async def chat(
 
     _inject_conversation_context(payload_for_generation.messages, conversation.messages)
     generated = await generation_client.generate(payload_for_generation, max_tokens=settings.max_output_tokens_chat)
-    filtered = await filter_output(generated.answer, payload_for_generation.source_chunks)
-    citations = _build_citations(payload_for_generation.source_chunks)
-    source_doc_ids = sorted({chunk.document_id for chunk in payload_for_generation.source_chunks}, key=str)
-    eligible = filtered.status == "passed"
-    await write_exact_cache(db, payload.message, filtered.answer, source_doc_ids, eligible=eligible)
+
+    presentation = await _present(
+        generated.answer,
+        payload_for_generation.source_chunks,
+    )
+    answer, citations, filter_status, filter_reason, grounded = presentation
+
+    # Only a grounded, cited answer may be cached. A filtered answer, a no-answer,
+    # or an answer whose citations did not survive validation is never reusable.
+    eligible = filter_status == "passed" and bool(citations)
+    cited_chunk_ids = [citation.chunk_id for citation in citations]
+    source_doc_ids = sorted({citation.document_id for citation in citations}, key=str)
+    await write_exact_cache(
+        db,
+        payload.message,
+        answer,
+        source_doc_ids,
+        eligible=eligible,
+        source_chunk_ids=cited_chunk_ids,
+    )
     await write_semantic_cache(
         db,
         payload.message,
-        filtered.answer,
+        answer,
         source_doc_ids,
         eligible=eligible,
         embedding_client=_embedding_client(request),
+        source_chunk_ids=cited_chunk_ids,
     )
     await _insert_turn_messages(
         db,
         session_id,
         payload.message,
-        filtered.answer,
+        answer,
         payload_for_generation.source_chunk_ids,
     )
     await _finalize_audit(
@@ -191,9 +217,9 @@ async def chat(
         reranked=True,
         retrieval_mode=payload_for_generation.retrieval_mode,
         generation_model=generated.model,
-        grounded=filtered.grounded,
-        output_filter_status=filtered.status,
-        output_filter_reason=filtered.reason,
+        grounded=grounded,
+        output_filter_status=filter_status,
+        output_filter_reason=filter_reason,
         latency_ms=_latency(started),
         token_input=generated.token_input,
         token_output=generated.token_output,
@@ -202,13 +228,60 @@ async def chat(
     await db.commit()
     return ChatResponse(
         session_id=session_id,
-        answer=filtered.answer,
+        answer=answer,
         cache_status="miss",
         source_chunk_ids=payload_for_generation.source_chunk_ids,
         citations=citations,
         query_audit_log_id=audit_id,
-        output_filter_status=filtered.status,
-        output_filter_reason=filtered.reason,
+        output_filter_status=filter_status,
+        output_filter_reason=filter_reason,
+    )
+
+
+@chainlit_step("response presentation", "tool")
+async def _present(
+    raw_answer: str,
+    source_chunks: list[RetrievalCandidate],
+) -> tuple[str, list[Citation], str, str | None, bool]:
+    """Turn a raw model answer into user-facing text, citations, and filter status.
+
+    A model answer that claims facts without surviving citations cannot be shown
+    as grounded, so it is converted to the concise no-answer rather than being
+    presented with an empty reference list.
+    """
+    candidates = build_citation_candidates(source_chunks)
+    presented = present_answer(raw_answer, candidates)
+
+    if presented.is_no_answer:
+        return NO_ANSWER_MESSAGE, [], "passed", None, False
+
+    filtered = await filter_output(presented.plain_text, source_chunks)
+    if filtered.status != "passed":
+        return filtered.answer, [], filtered.status, filtered.reason, False
+
+    if settings.require_sentence_citations and not presented.has_support:
+        return NO_ANSWER_MESSAGE, [], "filtered", "missing_citations", False
+
+    return (
+        presented.display_text,
+        [_citation_model(candidate) for candidate in presented.citations],
+        "passed",
+        None,
+        True,
+    )
+
+
+def _citation_model(candidate: CitationCandidate) -> Citation:
+    return Citation(
+        number=candidate.number,
+        chunk_id=candidate.chunk_id,
+        document_id=candidate.document_id,
+        document_title=candidate.document_title,
+        document_filename=candidate.document_filename,
+        page_number=candidate.page_number,
+        section_path=candidate.section_path,
+        snippet=candidate.snippet,
+        reference=candidate.reference_line(),
     )
 
 
@@ -335,13 +408,17 @@ async def _finalize_cached_hit(
     query: str,
     answer: str,
     cache_status: str,
+    source_chunk_ids: list[UUID],
 ) -> ChatResponse:
-    await _insert_turn_messages(db, session_id, query, answer, [])
+    # The cached answer already carries its sentence-end superscripts, so the same
+    # reference list has to be rebuilt from the chunks it was grounded in.
+    citations = await _citations_for_chunk_ids(db, source_chunk_ids)
+    await _insert_turn_messages(db, session_id, query, answer, source_chunk_ids)
     await _finalize_audit(
         db,
         audit_id=audit_id,
         cache_status=cache_status,
-        retrieved_chunk_ids=[],
+        retrieved_chunk_ids=source_chunk_ids,
         reranked=False,
         retrieval_mode="cache",
         generation_model=None,
@@ -357,8 +434,8 @@ async def _finalize_cached_hit(
         session_id=session_id,
         answer=answer,
         cache_status=cache_status,
-        source_chunk_ids=[],
-        citations=[],
+        source_chunk_ids=source_chunk_ids,
+        citations=citations,
         query_audit_log_id=audit_id,
         output_filter_status="passed",
     )
@@ -462,33 +539,17 @@ async def _latest_assistant_answer(db: AsyncSession, session_id: UUID) -> dict[s
     ).mappings().first()
 
 
-def _build_citations(chunks: list[RetrievalCandidate]) -> list[Citation]:
-    citations: list[Citation] = []
-    seen: set[UUID] = set()
-    for chunk in chunks:
-        if chunk.chunk_id in seen:
-            continue
-        seen.add(chunk.chunk_id)
-        citations.append(
-            Citation(
-                number=len(citations) + 1,
-                chunk_id=chunk.chunk_id,
-                document_id=chunk.document_id,
-                document_title=chunk.document_filename,
-                page_number=chunk.page_number,
-                section_path=chunk.section_path,
-                snippet=_citation_snippet(chunk.content),
-            )
-        )
-    return citations
-
-
 async def _citations_for_chunk_ids(db: AsyncSession, chunk_ids: list[UUID]) -> list[Citation]:
+    """Rebuild the reference list for chunk ids recorded on an earlier answer.
+
+    A chunk whose document has since been deleted simply drops out; the remaining
+    citations are renumbered so the list never has a gap.
+    """
     if not chunk_ids:
         return []
     stmt = text(
         """
-        SELECT c.id AS chunk_id, c.document_id, d.filename AS document_title,
+        SELECT c.id AS chunk_id, c.document_id, d.filename AS document_filename,
                c.page_number, c.section_path, c.content
         FROM chunks c
         JOIN documents d ON d.id = c.document_id
@@ -506,25 +567,19 @@ async def _citations_for_chunk_ids(db: AsyncSession, chunk_ids: list[UUID]) -> l
         row = by_id.get(chunk_id)
         if row is None:
             continue
-        citations.append(
-            Citation(
-                number=len(citations) + 1,
-                chunk_id=row["chunk_id"],
-                document_id=row["document_id"],
-                document_title=str(row["document_title"]),
-                page_number=row["page_number"],
-                section_path=row["section_path"],
-                snippet=_citation_snippet(str(row["content"])),
-            )
+        filename = str(row["document_filename"])
+        candidate = CitationCandidate(
+            number=len(citations) + 1,
+            chunk_id=row["chunk_id"],
+            document_id=row["document_id"],
+            document_title=document_display_title(filename),
+            document_filename=filename,
+            page_number=row["page_number"],
+            section_path=row["section_path"],
+            snippet=citation_snippet(str(row["content"])),
         )
+        citations.append(_citation_model(candidate))
     return citations
-
-
-def _citation_snippet(content: str, limit: int = 240) -> str:
-    normalized = " ".join(content.split())
-    if len(normalized) <= limit:
-        return normalized
-    return f"{normalized[: limit - 1].rstrip()}..."
 
 
 def _inject_conversation_context(messages: list[dict[str, Any]], conversation_messages: list[dict[str, str]]) -> None:

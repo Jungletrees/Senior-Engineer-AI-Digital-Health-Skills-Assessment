@@ -63,6 +63,9 @@ class Settings(BaseSettings):
     )
     grounding_numeric_check_enabled: bool = True
     grounding_numeric_tolerance: float = 0.0
+    # A factual answer with no surviving citation cannot be shown as grounded; it is
+    # converted to the concise no-answer instead.
+    require_sentence_citations: bool = True
     judge_model: str = "claude-haiku-4-5"
     judge_temperature: float = 0.0
     judge_rubric_version: int = 1

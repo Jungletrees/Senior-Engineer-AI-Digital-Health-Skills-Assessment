@@ -40,7 +40,8 @@ async def lookup_semantic_cache(
         await db.execute(
             text(
                 """
-                SELECT id, answer, source_doc_ids, 1 - (query_embedding <=> CAST(:embedding AS vector)) AS similarity
+                SELECT id, answer, source_doc_ids, source_chunk_ids,
+                       1 - (query_embedding <=> CAST(:embedding AS vector)) AS similarity
                 FROM semantic_cache
                 WHERE embedding_model = :embedding_model
                 ORDER BY query_embedding <=> CAST(:embedding AS vector)
@@ -71,6 +72,7 @@ async def lookup_semantic_cache(
         source_doc_ids=list(row["source_doc_ids"] or []),
         cache_status="semantic_hit",
         similarity=similarity,
+        source_chunk_ids=list(row["source_chunk_ids"] or []),
     )
 
 
@@ -81,6 +83,7 @@ async def write_semantic_cache(
     source_doc_ids: list[UUID],
     eligible: bool,
     embedding_client: EmbeddingClient | None = None,
+    source_chunk_ids: list[UUID] | None = None,
 ) -> None:
     """Write a semantic-cache row if the answer is cache-eligible."""
     if not eligible or not settings.semantic_cache_enabled:
@@ -95,6 +98,7 @@ async def write_semantic_cache(
                 representative_query,
                 answer,
                 source_doc_ids,
+                source_chunk_ids,
                 hit_count,
                 last_used_at
             )
@@ -104,6 +108,7 @@ async def write_semantic_cache(
                 :representative_query,
                 :answer,
                 :source_doc_ids,
+                :source_chunk_ids,
                 1,
                 now()
             )
@@ -115,6 +120,7 @@ async def write_semantic_cache(
             "representative_query": query,
             "answer": answer,
             "source_doc_ids": source_doc_ids,
+            "source_chunk_ids": list(source_chunk_ids or []),
         },
     )
 

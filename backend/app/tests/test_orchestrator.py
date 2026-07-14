@@ -80,7 +80,7 @@ async def test_generation_payload_contains_context_blocks() -> None:
     )
 
     text_blocks = [block["text"] for block in payload.messages[0]["content"] if block["type"] == "text"]
-    assert any('<context source="source.pdf" page="4">' in block for block in text_blocks)
+    assert any('<context id="1" source="source.pdf" page="4">' in block for block in text_blocks)
     assert text_blocks[-1] == "malaria dosing"
 
 
@@ -102,7 +102,7 @@ async def test_sanitized_chunk_content_cannot_break_context_block() -> None:
         for block in payload.messages[0]["content"]
         if block["type"] == "text" and block["text"].startswith("<context")
     )
-    inner = context_block.removeprefix('<context source="source.pdf" page="4">').removesuffix("</context>")
+    inner = context_block.removeprefix('<context id="1" source="source.pdf" page="4">').removesuffix("</context>")
     assert "</context>" not in inner.lower()
     assert "<system" not in inner.lower()
     assert "ignore previous instructions" not in inner.lower()
