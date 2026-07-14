@@ -1,126 +1,130 @@
-# Production Deployment & Secrets Management Guide
+# Production Deployment Plan
 
-This document outlines the production architecture, cloud deployment procedures, and security-first secret key management protocols for the **Last Mile Health RAG** system. It aligns with the specifications in Section 19 of [`ARCHITECTURE (4).md`](./build-plans-architecture/ARCHITECTURE%20%284%29.md).
+This document is the production deployment plan for the Last Mile Health RAG platform. It is not evidence that the system is already deployed. The repository currently contains Docker/Compose assets, but no Terraform/CDK/CloudFormation stack and no `.github/workflows/` directory.
 
----
+## Target AWS Architecture
 
-## 1. Production Architecture Overview
-
-The system is containerized, cloud-agnostic, and designed to scale horizontally. The concrete reference implementation targets **Amazon Web Services (AWS)** using managed, serverless, and isolated components:
-
-```
-                          ┌──────────────────────────┐
-                          │   AWS Route 53 (DNS)     │
-                          └────────────┬─────────────┘
-                                       │
-                                       ▼
-                     ┌──────────────────────────────────┐
-                     │  Application Load Balancer (ALB) │
-                     └────┬────────────┬────────────┬───┘
-                          │            │            │
-             ┌────────────┘            │            └────────────┐
-             ▼                         ▼                         ▼
- ┌───────────────────────┐ ┌───────────────────────┐ ┌───────────────────────┐
- │ Next.js Frontends     │ │ Chainlit Chat Services│ │ FastAPI Backend APIs  │
- │ (ECS Fargate Task)    │ │ (ECS Fargate Task)    │ │ (ECS Fargate Task)    │
- └───────────────────────┘ └───────────────────────┘ └───────────┬───────────┘
-                                                                 │
-                                       ┌─────────────────────────┼─────────────────────────┐
-                                       ▼                         ▼                         ▼
-                           ┌───────────────────────┐ ┌───────────────────────┐ ┌───────────────────────┐
-                           │   RDS PostgreSQL 16   │ │    Amazon S3 Bucket   │ │  AWS Secrets Manager  │
-                           │     (w/ pgvector)     │ │   (PDFs & Images)     │ │ (Injected at Runtime) │
-                           └───────────────────────┘ └───────────────────────┘ └───────────────────────┘
+```text
+CloudFront + WAF
+      |
+      v
+Application Load Balancer or API Gateway
+      |
+      +--> Next.js frontend
+      +--> Chainlit chat UI, after backend chat wiring is complete
+      +--> FastAPI backend
+              |
+              +--> RDS PostgreSQL 16 + pgvector, private subnets
+              +--> S3 private buckets for PDFs and page images
+              +--> Bedrock or hosted model providers
+              +--> Secrets Manager / SSM Parameter Store
+              +--> CloudWatch logs, metrics, traces, dashboards
 ```
 
-### Infrastructure Components
-1.  **Frontend & Chat Clients (Next.js & Chainlit):** Deployed as serverless container tasks on **AWS ECS Fargate** behind an Application Load Balancer (ALB).
-2.  **RAG Backend (FastAPI):** Deployed on **AWS ECS Fargate**. The Dockerfile automatically provisions system-level `tesseract-ocr` and `poppler-utils` packages to support scanned PDF OCR and table page image rendering.
-3.  **Database (Postgres 16 + pgvector):** Managed **Amazon RDS for PostgreSQL**. Deployed across multiple Availability Zones (Multi-AZ) with encrypted storage.
-4.  **Object Storage (PDF & Images):** **Amazon S3** (Private Bucket). Uploaded PDFs and rasterized page images are stored here instead of on local container file systems. Page images are fetched by frontends securely using short-lived S3 pre-signed URLs.
+Recommended components:
 
----
+| Layer | AWS choice | Rationale |
+|---|---|---|
+| Frontend | S3 + CloudFront for a static build, or ECS Fargate/App Runner for current Next.js server runtime | CloudFront gives edge caching when static; Fargate/App Runner avoids changing runtime assumptions. |
+| Backend API | ECS Fargate for the current container | Warm container is better for local reranker loading, PDF parsing/OCR, and async DB pooling. |
+| Chainlit | ECS Fargate behind ALB after wiring to `/api/v1/chat` | Keeps chat isolated while sharing backend logic. Omit from production until wired. |
+| Database | Amazon RDS PostgreSQL 16 with pgvector | Managed backups, Multi-AZ, encryption, and PostgreSQL extension support. |
+| Object storage | Amazon S3 private buckets | Durable storage for uploaded PDFs and rasterized page images. |
+| Secrets | Secrets Manager or SSM Parameter Store | Runtime injection without committing or baking secrets into images. |
+| Network boundary | CloudFront/WAF + ALB or API Gateway | Rate, bot, and request filtering before app services. |
+| Networking | VPC with public ALB/API boundary and private app/database subnets | Database is never public; app egress is controlled. |
+| IAM | Task/Lambda roles with least privilege | S3, Bedrock, CloudWatch, and secret access are scoped per workload. |
 
-## 2. Secrets Management Strategy (Zero-Leak Policy)
+## Lambda Compute Rationale
 
-Hardcoded keys are strictly prohibited in this codebase. Production secrets must never be committed to Git, stored in docker images, or printed in application log traces.
+Lambda is a strong fit for bursty, event-driven and idle-cost-sensitive workloads:
 
-### 2.1 Storage: AWS Secrets Manager
-All active credentials and API tokens are stored securely in **AWS Secrets Manager** as a single JSON key-value secret (e.g., `production/last-mile-rag/secrets`).
+- corpus evaluation triggers
+- scheduled grading kicks
+- lightweight ingestion dispatch
+- post-upload fanout events
+- small health/smoke handlers
+- notification and anomaly alert delivery
 
-### 2.2 Runtime Injection (ECS Integration)
-Secrets are securely injected as environment variables into Fargate containers at boot time. This is defined natively in the ECS Task Definition using the `secrets` block, referencing the AWS Secrets Manager ARN and specific JSON keys:
+Lambda is not ideal for long-running local model inference, local CrossEncoder reranking, heavyweight CPU/GPU workloads, large PDF OCR/rasterization, or request paths that need a warm database pool without RDS Proxy. Those workloads should use ECS Fargate, Bedrock-hosted models, or queue-backed workers.
 
-```json
-{
-  "name": "ANTHROPIC_API_KEY",
-  "valueFrom": "arn:aws:secretsmanager:us-east-1:123456789012:secret:production/last-mile-rag/secrets:ANTHROPIC_API_KEY::"
-}
-```
+If the API is split onto Lambda, use API Gateway + Lambda + RDS Proxy. Mitigate cold starts with small deployment packages, provisioned concurrency for latency-sensitive handlers, model calls delegated to Bedrock, and no local ML model loading in function startup.
 
-This ensures that:
-- Secrets are **never** committed to version control.
-- Secrets are **never** present in the Docker image layers.
-- Application developers do not need access to production keys.
+| Compute option | Use when | Trade-off |
+|---|---|---|
+| Lambda | Bursty jobs, event triggers, lightweight handlers | Cold starts, timeout limits, RDS Proxy needed for pooling |
+| ECS Fargate | Current backend, OCR/PDF work, local reranker, persistent pool | Higher idle cost than Lambda |
+| App Runner | Simple container deploy with fewer knobs | Less VPC/routing control than ECS |
+| EKS | Many services and platform team ownership | Too much operational overhead for this scope |
+| EC2 | Full host control or special hardware | Manual patching/scaling burden |
 
----
+## Bedrock Model Switching and Cost Optimization
 
-## 3. Critical Secrets Reference
+Amazon Bedrock is the preferred production model access layer where organizational governance, centralized model permissions, and AWS-native billing controls are required.
 
-The RAG application relies on the following credentials to operate. When deploying, ensure these exact variables are configured in the cloud secrets provider:
+Routing policy:
 
-| Variable Name | Type | Purpose | Production Management |
-|---|---|---|---|
-| `ANTHROPIC_API_KEY` | Sensitive | API key for Claude 3.5 Sonnet / Haiku generation and agent loops. | AWS Secrets Manager (Task Injected) |
-| `OPENAI_API_KEY` | Sensitive | API key for OpenAI text-embedding-3-small vectors. | AWS Secrets Manager (Task Injected) |
-| `VOYAGE_API_KEY` | Sensitive | (Optional) Paired with Claude generation for Voyage Embeddings. | AWS Secrets Manager (Task Injected) |
-| `JWT_SECRET` | Sensitive | A cryptographically secure 256-bit key used to sign Next.js/FastAPI session tokens. | AWS Secrets Manager (Task Injected) |
-| `CHAINLIT_AUTH_SECRET` | Sensitive | A secure random signing key used by Chainlit to secure chat sessions. | AWS Secrets Manager (Task Injected) |
-| `POSTGRES_PASSWORD` | Sensitive | Master password for the PostgreSQL vector database. | AWS Secrets Manager (Task Injected) |
-| `DATABASE_URL` | Sensitive | Full DB connection string (includes user, password, host, port, DB name). | Constructed at launch time in task definition |
+- fast/low-cost model: summaries, classification, grading prechecks, query expansion, and low-risk transformations
+- stronger model: final grounded answer generation and complex clinical reasoning
+- pinned judge model: `JudgeAgent` uses a fixed model, temperature, and rubric version so trends are reproducible
 
----
+Cost controls:
 
-## 4. Production Deployment Steps
+- Track per-model input/output token usage and cost through `MODEL_PRICING_JSON` or a Bedrock-aware equivalent.
+- Configure AWS Budgets and CloudWatch anomaly alerts for model cost spikes.
+- Keep exact cache, semantic cache, and prompt caching enabled only where safe.
+- Run refusal/grounding gates before caching generated answers.
+- Preserve exact numeric grounding regardless of which model produces the answer.
 
-Follow this structured, step-by-step procedure to deploy the application to AWS:
+## Reliability and Scalability
 
-### Step 1: Provision Infrastructure (Terraform)
-Deploy the core VPC, Subnets, ECS Clusters, ALB, RDS instance, S3 Bucket, and Secrets Manager using Terraform:
-```sh
-cd terraform/
-terraform init
-terraform apply -var-file=production.tfvars
-```
+- FastAPI uses async request handling and async SQLAlchemy sessions.
+- Use RDS Proxy when Lambda handlers connect to RDS.
+- Keep scheduler jobs behind PostgreSQL advisory-lock singleton guards so horizontal replicas do not duplicate work.
+- Make ingestion and gold-eval jobs idempotent around document content hashes, run IDs, and audit lineage.
+- Move large PDF processing to queue/event-backed workers at scale: S3 upload event -> SQS/EventBridge -> worker/Lambda/ECS task.
+- Set autoscaling boundaries separately for frontend, backend, Chainlit, and worker tasks.
+- Run RDS Multi-AZ with automated backups and periodic restore tests.
+- Use S3 versioning/lifecycle rules and KMS encryption for PDFs and page images.
+- Add ALB/API readiness checks against `/health`, plus deeper smoke checks after deployment.
+- Keep WAF and application rate limits active; tune per-IP/session limits from observed traffic.
+- Build CloudWatch dashboards for p95 latency, 5xx rate, cache hit rate, grounding failures, cost, anomaly flags, and gold-eval score trends.
 
-### Step 2: Seed Secrets
-Populate AWS Secrets Manager with placeholders or actual API tokens via the AWS CLI or AWS Console:
-```sh
-aws secretsmanager create-secret \
-  --name production/last-mile-rag/secrets \
-  --secret-string '{"ANTHROPIC_API_KEY":"sk-ant-...","OPENAI_API_KEY":"sk-proj-...","JWT_SECRET":"supersecret","CHAINLIT_AUTH_SECRET":"chainlitsecret","POSTGRES_PASSWORD":"strongdbpass"}'
-```
+## Security
 
-### Step 3: CI/CD Execution (GitHub Actions)
-Our automated pipeline handles compilation, testing, building, and deployment when code is merged to `main`:
-1.  **Linter & Tests:** Runs Python `ruff`, `pytest`, Next.js `eslint`, and Jest tests.
-2.  **Docker Build & Push:** Builds container images and pushes them to **Amazon ECR** (Elastic Container Registry).
-3.  **Task Definition Update:** Registers a new ECS task definition, injecting the Secret Manager ARNs for the environment variables.
-4.  **Service Deployment:** Instructs ECS to perform a rolling blue-green deployment of the containers.
+- No hardcoded secrets. `.env` stays local and ignored; production secrets are injected from Secrets Manager or SSM.
+- JWT session tokens protect document-management endpoints; `ANONYMOUS_CHAT_ALLOWED` controls chat access.
+- CORS must be explicit per environment.
+- Upload validation checks PDF magic bytes, MIME allow-list, size, and page count.
+- S3 buckets remain private with bucket policies, KMS encryption, and no public ACLs.
+- RDS, S3, Secrets Manager, and model-provider secrets use KMS encryption.
+- ECS task and Lambda roles use least privilege; no static AWS access keys are needed.
+- RDS is private and reachable only from backend/worker security groups.
+- Bedrock access is least privilege by model/action and environment.
+- Audit logs, `query_audit_log`, `agent_trace_log`, `response_grade`, and `anomaly_flag` support investigation.
+- PII/sensitive-output guardrails should be kept before response send and before cache writes.
 
-### Step 4: Run Database Migrations
-Run the Alembic migrations against the production RDS database. This is executed as an ephemeral **ECS RunTask** immediately before the main backend service starts:
-```sh
-docker compose exec backend alembic upgrade head
-# Or on ECS:
-aws ecs run-task --cluster last-mile-rag --task-definition last-mile-rag-migrations
-```
+## CI/CD Plan
 
----
+No GitHub Actions workflows are currently present. The intended pipeline is:
 
-## 5. Security & Isolation Hardening (Best Practices)
+1. PR checks run backend `pytest`, frontend `npm test`, lint/typecheck where configured, Docker backend build, and Alembic migration validation.
+2. Main branch deployment is gated with explicit `needs:` dependencies on all required checks.
+3. Containers are built and pushed to Amazon ECR.
+4. Infrastructure is deployed with Terraform, CDK, or CloudFormation.
+5. Alembic migrations run as a one-off task against the target environment before backend rollout.
+6. Environments are separated into dev, staging, and prod with distinct AWS accounts or at least distinct VPCs/secrets/databases.
+7. Production requires manual approval.
+8. Secrets are injected from Secrets Manager or SSM at runtime.
+9. Post-deploy smoke tests hit `/health`, OpenAPI docs, a minimal upload path, and a minimal chat path.
+10. Rollback returns services to the previous image/task definition and, when necessary, restores from RDS point-in-time recovery.
+11. Gold-eval floor gating can be added after corpus PDFs are pinned, indexed, and expected answers are human-verified.
 
-1.  **Private Subnets:** Deploy all ECS container tasks and the RDS instance in private VPC subnets. Only the Application Load Balancer (ALB) should be exposed in public subnets.
-2.  **IAM Least Privilege:** Create fine-grained IAM task execution roles. The FastAPI backend role should be granted permission to read/write *only* the specific RAG S3 bucket and decrypt *only* its specific Secrets Manager ARN.
-3.  **S3 Access Control:** Disable "Block Public Access" selectively and only access S3 assets via IAM roles or short-lived pre-signed URLs. 
-4.  **VPC Security Groups:** Restrict Postgres port `5432` access exclusively to incoming connections from the FastAPI backend's Security Group, completely isolating the DB from the public internet.
+## Migration and Data Strategy
+
+- Alembic remains the database migration tool.
+- Migrations should run in staging before prod.
+- Production migrations should be backward-compatible where possible, especially for rolling deployments.
+- Use RDS snapshots and point-in-time recovery before risky migrations.
+- Keep uploaded PDFs and page images in S3, not container filesystems.
+- Do not commit downloaded PDFs, generated gold reports, local database volumes, pycache, Playwright reports, secrets, or `.env`.

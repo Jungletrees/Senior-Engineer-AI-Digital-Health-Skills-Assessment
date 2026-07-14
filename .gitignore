@@ -37,6 +37,10 @@ dist/
 # misc
 .DS_Store
 *.pem
+~$*
+*PROMPT*.md
+*Prompt*.md
+*prompt*.md
 
 # debug
 npm-debug.log*

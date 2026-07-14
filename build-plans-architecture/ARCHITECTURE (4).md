@@ -3,13 +3,13 @@
 
 **Revision note:** this is v-next of the architecture doc. It folds in a design review that (a) kept the starter stack unchanged, (b) added structural table/figure detection with page-image-augmented generation, (c) evaluated `search_result` content blocks as a citation-mapping upgrade, and (d) reverses the earlier single-orchestrator decision in favor of a scoped multi-agent ingestion/retrieval design. Everything not called out below is unchanged from the prior revision. Superseded content (old §15's "single orchestrator" framing, the old Decision Log row for agent architecture) is replaced in place, not left alongside the new material, so this document has one current answer per question, not two competing ones.
 
-**Revision note (prior pass):** a second design review benchmarked this document against AFYA-AOS, a much larger (32-agent, multi-country, multi-AWS-account) reference architecture, specifically to check this project's discipline — the specific fields tracked, the specific separations of concern — not its infrastructure. AFYA-AOS needs OAuth2 token exchange, a versioned Agent Registry, and a Pricing Intelligence Agent because it has real network hops between independently-deployed agents across separate AWS accounts; this project is one FastAPI process with two internal agents and no such hop, so none of that transfers, and this document says so explicitly rather than importing it by default. What *does* transfer, right-sized: retrospective response grading separated from the pre-send gate (§11.6, §20), a read-time lineage view (§6, §11.5), typed pass/fail + reason fields instead of booleans (§6), an idempotency key on `/chat` (§5.5, §6), named kernel invariants instead of implicit prose (§15.1), cost attribution by category (§6, §10), a target/alert/owner observability table (§19.1), and a widened PII-redaction boundary that covers caches and logs, not just the live response (§12.5). Each addition below is tagged with the AFYA-AOS section it echoes and, symmetrically, three AFYA-AOS patterns are named as **explicitly not adopted** with the reasoning logged in §18 rather than silently omitted: per-agent-instance identity tokens (§15.9), signed cross-service capability tokens/OAuth2 token exchange (§12.1), and a Pricing Intelligence Agent (§18, §19).
+**Revision note (prior pass):** a second design review benchmarked this document against AFYA-AOS, a much larger (32-agent, multi-country, multi-AWS-account) reference architecture, specifically to check this project's discipline — the specific fields tracked, the specific separations of concern — not its infrastructure. AFYA-AOS needs OAuth2 token exchange, a versioned Agent Registry, and a Pricing Intelligence Agent because it has real network hops between independently-deployed agents across separate AWS accounts; this project is one FastAPI process with two internal agents and no such hop, so none of that transfers, and this document says so explicitly rather than importing it by default. What *does* transfer, right-sized: retrospective response grading separated from the pre-send gate (§11.6, §20), a read-time lineage view (§6, §11.5), typed pass/fail + reason fields instead of booleans (§6), an idempotency key on `/chat` (§5.5, §6), named kernel invariants instead of implicit prose (§15.1), cost attribution by category (§6, §10), a target/alert/owner observability table (§19.7), and a widened PII-redaction boundary that covers caches and logs, not just the live response (§12.5). Each addition below is tagged with the AFYA-AOS section it echoes and, symmetrically, three AFYA-AOS patterns are named as **explicitly not adopted** with the reasoning logged in §18 rather than silently omitted: per-agent-instance identity tokens (§15.9), signed cross-service capability tokens/OAuth2 token exchange (§12.1), and a Pricing Intelligence Agent (§18, §19).
 
-**Revision note (this pass):** an external architecture review of the prior pass found three defects that break behavior exactly as specified, plus a documentation-integrity problem where the prior pass's revision note cited six pieces (`agentops_summary`, `response_grade`/§11.6, §19.1, named Kernel Invariants, §15.9, and three AFYA-AOS "not adopted" Decision Log rows) that were named but never actually written into the body. This pass closes all of it:
+**Revision note (this pass):** an external architecture review of the prior pass found three defects that break behavior exactly as specified, plus a documentation-integrity problem where the prior pass's revision note cited six pieces (`agentops_summary`, `response_grade`/§11.6, observability targets, named Kernel Invariants, §15.9, and three AFYA-AOS "not adopted" Decision Log rows) that were named but never actually written into the body. This pass closes all of it:
 - **Confidence gate no longer runs on raw RRF score (§7.2, §7.3, §15.3, §17, §18, §23).** The RRF formula at `k=60` tops out at `2/61 ≈ 0.033` for two ranking lists — it can never cross a `0.55` threshold, so `expand_query` would have fired on every single turn, silently inverting §10's entire "cheap path is the default" cost story. RRF is now used only for candidate fusion/ordering into rerank, as it was designed for; the confidence gate reads the cross-encoder's sigmoid-activated relevance score instead, which is naturally bounded 0–1 and already computed in the same pass (§17).
 - **Ingestion iteration cap now scales with document length (§15.2, §23).** A fixed `INGESTION_AGENT_MAX_ITERATIONS_PER_DOC=40` against `MAX_PDF_PAGES=300` meant any document past ~40 pages silently fell back to text-only assessment for its entire remaining length — quietly defeating §4.3's structure detection for most realistically-sized documents, with `status=indexed` giving no visible signal that anything degraded.
 - **`content_tsv` is now a generated column (§6).** It was declared with a GIN index but nothing populated it, so the lexical half of every "hybrid" search silently returned nothing.
-- **The six dangling citations are now real sections/objects**, not just named in a revision note: the `agentops_summary` view and `response_grade` table (§6), the nightly grading job (§11.6), the §19.1 observability table, two named Kernel Invariants (§15.1), and §15.9 plus the three corresponding Decision Log rows (§18).
+- **The six dangling citations are now real sections/objects**, not just named in a revision note: the `agentops_summary` view and `response_grade` table (§6), the nightly grading job (§11.6), the §19.7 observability table, two named Kernel Invariants (§15.1), and §15.9 plus the three corresponding Decision Log rows (§18).
 - **Two previously-unaddressed asks are now covered:** anomaly detection (§20.1) and a live, per-turn agent-trace visualization in the chat UI (§5.6).
 - **Secondary gaps closed as one-line notes or small additions, matching this document's own "name it, don't silently omit it" house style:** semantic cache eviction/invalidation (§9.2), page-image access control (§12.4), a per-IP rate-limit ceiling alongside the per-session one (§13), an embedding-dimension mismatch check (§20), `hnsw.ef_search` as a per-transaction setting under connection pooling (§7.2), and an explicit disaster-recovery scope note (§19).
 
@@ -41,11 +41,11 @@ This is the single source of truth for the assessment build — architecture, re
 
 | # | Requirement | Addressed in | Summary |
 |---|---|---|---|
-| 1 | Chat interface, grounded responses | §5 (Chat Interface & UX), §7.5 (grounding check), §16 (citation strategy) | Chainlit UI; streamed responses; citations attached per message; grounding enforced before send |
+| 1 | Chat interface, grounded responses | §5 (Chat Interface & UX), §7.5 (grounding check), §16 (citation strategy) | Backend chat API is implemented and grounded; Chainlit UI wiring and Chicago superscript rendering remain documented limitations |
 | 2 | PDF upload, dedicated page | §4.5 (Frontend Upload UX) | Next.js `/documents` page: upload, progress, status list, delete |
 | 3 | RAG backend — scalable, secure, well-documented | §3 (cross-cutting summary), §4–§10, §15 (implementation), §12 (security) | See §3 for the direct answer to each of the three adjectives |
 | 4 | Database — pgvector tables/indexes | §6 (Database Schema) | HNSW + GIN indexes, Alembic migrations, `page_images` + `agent_trace_log` additions |
-| 5 | Testing — backend and frontend | §11 (Testing Strategy) | pytest (backend, incl. agent tool tests), Jest/RTL (frontend components), Playwright (e2e smoke test) |
+| 5 | Testing — backend and frontend | §11 (Testing Strategy) | pytest backend suite and Node frontend deterministic tests are implemented; Playwright remains planned |
 | 6 | Local run instructions | `local-setup.md` (companion file) | Not duplicated here — see Document Map above |
 | 7 | Production deployment plan | §19 | Cloud provider, CI/CD, infrastructure considerations, observability |
 | Bonus | `.env.example` | §23 | Every variable this document references |
@@ -54,7 +54,7 @@ This is the single source of truth for the assessment build — architecture, re
 | Bonus | ML/algorithm choices are justified, not assumed | §17 (Library & Algorithm Choices) | |
 | Bonus | Production behavior is graded retrospectively, not just pre-send | §11.6, §20, §6 (`response_grade`) | Deterministic grounding check + sampled LLM-judge rubric score, nightly, on live traffic |
 | Bonus | One canonical "what happened for this response" record | §6 (`agentops_summary` view), §11.5 | Read-time view over existing tables — no new instrumentation |
-| Bonus | Observability metrics have a target, alert, and owner, not just a monitoring intent | §19.1 | |
+| Bonus | Observability metrics have a target, alert, and owner, not just a monitoring intent | §19.7 | |
 
 ---
 
@@ -603,18 +603,18 @@ To balance cost, speed, and accuracy, the RAG implementation enforces automated 
         │
 [Nightly Cron Job]
         │
-        └──► [Ultimate Reasoning Tier (Opus/Gemini Ultra)] ──► Out-of-band Evaluation & Grading Agent (weighted rubrics).
+        └──► [Pinned Judge Tier] ──► Out-of-band Evaluation & Grading Agent (fixed rubric/version).
 ```
 
 #### A. Model Auto-Selection & Tiering Framework
 1.  **Low Complexity / High Speed Tier (`CLAUDE_HAIKU` / `GEMINI_FLASH`):** Charged with initial intent classification, lightweight session summaries, and cached-miss validation. Highly cost-effective and optimized for sub-second latency. Controlled by `GENERATION_MODEL_FAST`.
 2.  **Medium-High Complexity Tier (`CLAUDE_SONNET` / `GEMINI_PRO`):** Charged with active multi-agent ingestion/retrieval decisions, complex query planning, prompt-injection validation, and multi-turn conversational answer generation. This balances outstanding precision and grounded generation with sustainable costs. Controlled by `GENERATION_MODEL_PRIMARY` and `AGENT_MODEL`.
-3.  **Ultimate Complexity & Rubric-Grading Tier (`CLAUDE_OPUS` / `GEMINI_ULTRA`):** Reserved exclusively for the **Evaluation & Grading Agent** running out-of-band during the nightly retrospective job. This agent writes dynamically weighted marking rubrics for real conversation sessions and grades live responses step-by-step. To safeguard user chat latency and avoid runtime cost inflation, this tier is completely isolated from live-traffic paths. Controlled by `EVALUATION_MODEL_OPUS`.
+3.  **Pinned Judge Tier (`JUDGE_MODEL`):** Reserved for the `JudgeAgent` boundary used by retrospective grading and gold evaluation. The judge stores model, temperature, and rubric version on every score so trend reports compare compatible runs. To safeguard user chat latency and avoid runtime cost inflation, this tier is isolated from live-traffic answer generation.
 
 #### B. API Secret Key Segregation & Security
 To safely execute this multi-provider agent model, API credentials are strictly segregated in `.env` files and the cloud deployment environment:
-*   **Separation of Concerns:** Separate API tokens are configured for OpenAI (`OPENAI_API_KEY`), Anthropic (`ANTHROPIC_API_KEY`), Gemini/Google (`GEMINI_API_KEY`), and Opus (`OPUS_API_KEY`). This limits blast-radius if a key is compromised and permits fine-grained billing alerts, spending limits, and provider-specific rate limits.
-*   **Blast-Radius Isolation:** The `OPUS_API_KEY` can be isolated to a separate billing account or service principal, completely separate from runtime user-facing keys, preventing runaway cost spikes on the primary client-facing tier.
+*   **Separation of Concerns:** Separate API tokens are configured for OpenAI (`OPENAI_API_KEY`), Anthropic (`ANTHROPIC_API_KEY`), Gemini/Google (`GEMINI_API_KEY`), and optional Voyage embeddings (`VOYAGE_API_KEY`). This limits blast radius if a key is compromised and permits fine-grained billing alerts, spending limits, and provider-specific rate limits.
+*   **Judge Isolation:** The evaluation path is isolated by `JUDGE_MODEL`, `JUDGE_TEMPERATURE`, and `JUDGE_RUBRIC_VERSION`. In a Bedrock deployment this should also be isolated through model-specific IAM permissions and budget alerts, not through a hardcoded separate key name.
 *   **Safe Container Injection:** In development, keys are populated locally inside `.env` (excluded from git tracking). In production (AWS ECS Fargate), keys are registered securely in AWS Secrets Manager and injected dynamically as environment variables at the container task boundary at boot, ensuring zero credential persistence inside source repositories, Docker images, or application console logs.
 
 ---
@@ -635,11 +635,12 @@ To safely execute this multi-provider agent model, API credentials are strictly 
 
 5–10 question → expected-source-document pairs, run end-to-end, checked for retrieval hit-rate and groundedness, **now reported split by `retrieval_mode`** (§7.6) to validate the gating threshold rather than assume it.
 
-### 11.3 Frontend — unchanged
+### 11.3 Frontend — current status and planned e2e
 
-- Component tests (Jest + RTL) for `/documents`: renders, client-side validation, progress/error/empty states.
-- Chainlit's own rendering exercised indirectly via backend API-contract tests.
-- E2E smoke test (Playwright): upload a PDF with a table → wait for `indexed` → ask a question whose answer depends on that table → receive a grounded response whose citation references the page that has a `page_images` row. This is the single highest-value test in the project — it exercises ingestion, structure detection, retrieval, the confidence gate, multimodal generation, and citation together.
+- Current deterministic frontend tests use Node's built-in test runner against `frontend/tests/documentsCore.test.mjs`. They verify the `/documents` helper layer: upload validation, API helper behavior, auth header inclusion, upload progress, mocked polling transitions, optimistic delete, and rollback.
+- Jest/RTL component tests are not scaffolded in the current frontend package.
+- Chainlit's backend step instrumentation is covered through the context-guarded shim tests; the `chainlit_app` browser UI is not yet wired to `/api/v1/chat`.
+- Playwright e2e is planned but not scaffolded. Do not claim the e2e path has passed until a Playwright dependency, config, and spec are added and the test is run. The intended high-value smoke remains: upload a PDF with a table → wait for `indexed` → ask a question whose answer depends on that table → receive a grounded response whose citation references the page that has a `page_images` row.
 
 ### 11.4 Running tests — unchanged
 
@@ -719,7 +720,7 @@ Chosen to match genuinely different judgment calls, not to split code for its ow
 - **Ingestion Agent** — judgment: is this page native-text or does it need OCR, and which pages need image capture. Most of the pipeline underneath stays deterministic function calls; the agent wraps only the parts that require a decision. Model: Optimized for cost/speed via **Claude 3.5 Sonnet** (or Gemini Pro).
 - **Retrieval Agent** — judgment: is the deterministic hybrid-search result confident enough to proceed, or does the query need expansion; does a top result's page need its image pulled in. Model: Optimized for precision/speed via **Claude 3.5 Sonnet** (or Gemini Pro).
 - **Orchestrator** — unchanged role from §2/§5, except it now calls the Retrieval Agent as a tool ("agent-as-tool": the sub-agent runs its own bounded tool-use loop internally and returns a structured result), then generates the final answer through the output filter exactly as §12.2 already does. Model: High speed **Claude 3.5 Haiku** (or Gemini Flash) for initial checks, tiering up to **Claude 3.5 Sonnet** for final generation.
-- **Evaluation & Grading Agent (Nightly / Out-of-band)** — judgment: dynamically writes multi-criteria weighted marking rubrics for real conversation logs, and evaluates the generated response quality (1-5 score, step-by-step audit rationale). Model: Exclusively uses the maximum-analytical **Claude 3/3.5 Opus** (powered by a separate `OPUS_API_KEY` to isolate billing and security) or **Gemini Ultra** to ensure the highest-fidelity quality checks.
+- **Evaluation & Grading Agent (Nightly / Out-of-band)** — judgment: evaluates generated response quality against the versioned rubric and stores score/rationale metadata. Model: controlled by `JUDGE_MODEL` with `JUDGE_TEMPERATURE=0.0` and `JUDGE_RUBRIC_VERSION`, so score trends compare compatible judge configurations.
 
 **Kernel Invariants.** Two structural rules govern how GUARD, IAGENT, ORCH, and RAGENT relate to each other in §2's diagram — named explicitly here rather than left as implicit prose, the same discipline AFYA-AOS's §4 applies at its own (much larger) scale, right-sized down to what this single-process, two-internal-agent system actually needs:
 
@@ -966,6 +967,15 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 | Query decomposition/expansion | Generation model call (Claude), not a classical ML library | This is a language-understanding judgment call, not a pattern classical NLP libraries solve well — appropriately delegated to the same model already in the stack |
 | Embeddings | Configured `EMBEDDING_MODEL` (OpenAI/Voyage, §23) | Unchanged from the prior revision |
 
+### 17.1 Dependency and Build Reliability Notes
+
+- The backend image initially hit pip cache/hash corruption. The container build now installs backend dependencies without a pip cache mount:
+  `RUN pip install --no-cache-dir --default-timeout=180 --retries=10 -r /requirements.txt`.
+- A later empty wheel payload/hash error occurred during the large `sentence-transformers` / torch dependency chain. The architecture-preserving fix is to pin CPU-only `torch==2.9.1+cpu` through the official PyTorch CPU wheel index before `sentence-transformers`. This keeps the local CrossEncoder reranker while avoiding CUDA wheel downloads and reducing image fragility, size, and cost.
+- The backend Docker context is the repository root. `.dockerignore` includes only the required runtime/test-support paths (`backend/`, `gold_standard/`, and `pytest.ini`) so scheduled gold evaluation imports work inside the image without sending local artifacts or corpus PDFs.
+- `poppler-utils` and `tesseract-ocr` are runtime system packages required by PDF rasterization/OCR. They must be installed at the container or host layer; pip packages such as `pdf2image` and `pytesseract` are only Python wrappers.
+- Chainlit's dependency graph is installed with `uv pip install --system --no-cache -r requirements.txt` to avoid long pip resolver backtracking through the Chainlit/OpenTelemetry dependency family.
+
 ---
 
 ## 18. Decision Log
@@ -973,7 +983,7 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 | Decision | Choice | Alternative considered | Why |
 |---|---|---|---|
 | Frontend/backend frameworks | Keep Next.js + FastAPI | Substitute either | Both already fit the task well; substitution would trade depth for no clear benefit here |
-| Chat surface | Chainlit, alongside Next.js | Custom chat UI in Next.js | Chainlit's built-in streaming/citation/file-in-chat UX would take real time to hand-roll; Next.js suits the document-management page better |
+| Chat surface | Backend `/api/v1/chat` first; Chainlit retained but not yet wired | Custom chat UI in Next.js | Backend RAG behavior is the stable contract. Chainlit remains the intended chat container, but current production readiness must not claim complete UI citation behavior until wiring and citation rendering are implemented. |
 | Vector index type | pgvector HNSW | pgvector IVFFlat | No training step; performs better at low-to-moderate row counts, which is this assessment's regime |
 | Chunking strategy | Fixed-token (~480 tokens, 15% overlap) with structure-aware override | Pure semantic chunking | Benchmarked evidence favors fixed/recursive as the stronger default; semantic chunking only earns adoption after an A/B test |
 | Retrieval | Hybrid (lexical + vector) + rerank | Vector-only | Postgres full-text search is close to free and catches exact-term matches vector search under-ranks |
@@ -1003,7 +1013,7 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 | Per-IP rate limit | Add `query_audit_log.client_ip` and enforce `RATE_LIMIT_PER_IP_PER_HOUR=100` | Per-session rate limit only | Covers many-sessions-from-one-IP abuse that a session-only counter cannot detect |
 | Rate-limit counter storage | Reuse `query_audit_log` time-window counts | Redis or a separate counter table | Fits the existing Postgres-first architecture and keeps local/dev infrastructure minimal |
 | Scheduler concurrency under horizontal scaling | Postgres advisory-lock singleton guard per job family | Dedicated scheduler process; leader-election sidecar; Redis lock | Right-sized to a single-DB deployment; no new infrastructure; prevents N-replica duplicate scheduled jobs |
-| `cost_usd` source of truth | `MODEL_PRICING_JSON`, with `NULL` when a model is unpriced | Hardcode rates or silently write 0 | Cost drives §19.1 and anomaly signals; an unpriced model should be visible, not treated as free |
+| `cost_usd` source of truth | `MODEL_PRICING_JSON`, with `NULL` when a model is unpriced | Hardcode rates or silently write 0 | Cost drives §19.7 and anomaly signals; an unpriced model should be visible, not treated as free |
 | Rate-limit count performance | Composite indexes on `(session_id, created_at)` and partial `(client_ip, created_at)` | Leave hot-path counts unindexed | Keeps the Postgres-first rate limiter while avoiding O(table) scans on every chat turn |
 | Semantic-cache model correctness | Store and filter `semantic_cache.embedding_model`; delete stale rows on drift | Compare vectors across embedding models | Cosine similarity across embedding spaces is invalid; scoping is the minimal safe fix |
 | Clinical numeric grounding | Deterministic numeric/dosage check layered after lexical grounding, with exact value+unit matching for generated output | Term-overlap only; hosted NLI model; tolerance-based numeric matching | Term overlap cannot distinguish `5 ml` from `15 ml`; output inferencing of numerical figures must be 100% exact for clinical safety |
@@ -1019,21 +1029,92 @@ Every "ML algorithm" this design needs is a well-established technique with a ma
 
 ---
 
-## 19. Production Deployment Plan (Requirement 7)
+## 19. Production AWS Deployment Plan (Requirement 7)
 
-- **Cloud provider:** cloud-agnostic by design (containerized stack), deployed here on AWS as a concrete default — ECS Fargate for the three app containers (Next.js, Chainlit, FastAPI), RDS for PostgreSQL 16+ with `pgvector` enabled, S3 for uploaded PDFs *and* rasterized page images (§4.3) rather than container-local storage, Secrets Manager for API keys, an Application Load Balancer in front of the services.
-- **Why Fargate over serverless/functions:** this workload has occasionally-long-running requests (PDF parsing, batch embedding, the Ingestion Agent's per-page assessment loop) and a persistent database connection pool — a warm container fits that shape better than a cold-start-sensitive function.
-- **CI/CD:** GitHub Actions — lint and test on every PR (backend `pytest` including agent tool tests, frontend `npm test`/Playwright, §11), build and push images on merge to `main`, deploy via the platform's native deploy action or a thin Terraform apply. Tests gate the deploy.
-- **Infrastructure considerations:**
-  - Multi-AZ RDS.
-  - Automated backups / point-in-time recovery.
-  - A health-check endpoint per service.
-  - The backend is stateless (§3, §5.4), so it scales horizontally with no sticky-session requirement.
-  - **New:** the backend container image needs system-level `tesseract-ocr` and `poppler-utils` packages installed (Dockerfile `apt-get install`, not pip-installable) for the OCR fallback and rasterization paths (§4.3, §21) — a deployment-relevant detail, not just a local-dev one.
-- **Observability:** structured JSON logging to CloudWatch Logs (or equivalent); `query_audit_log` and, new, `agent_trace_log` (§6) as the primary application-level metrics source (latency, cache-hit rate, cost, groundedness pass-rate, agentic-vs-deterministic retrieval split); a basic alert on elevated error rate or p95 latency breach.
-- **Cost note:** pgvector on RDS avoids the "managed vector database has a minimum monthly floor" problem some dedicated vector databases carry.
+This is a deployment plan, not a claim that AWS infrastructure is live. The repository currently has Docker/Compose assets but no `.github/workflows/` directory and no Terraform/CDK/CloudFormation stack.
 
-### 19.1 Observability Targets, Alerts, and Owners
+### 19.1 Target Architecture
+
+- **Cloud provider:** AWS.
+- **Frontend:** S3 + CloudFront if the frontend is converted to a static export; otherwise ECS Fargate or App Runner for the current Next.js server runtime.
+- **Backend API:** ECS Fargate for the current FastAPI container because local reranker loading, PDF parsing/OCR, and async DB pooling benefit from warm containers.
+- **Chainlit:** ECS Fargate behind the same ALB after `chainlit_app` is wired to `/api/v1/chat`; omit it from production until then.
+- **Database:** Amazon RDS PostgreSQL 16 with `pgvector`, Multi-AZ, encrypted storage, automated backups, and restore testing.
+- **Object storage:** private S3 buckets for uploaded PDFs and rasterized page images, with KMS encryption and lifecycle rules.
+- **Secrets:** AWS Secrets Manager or SSM Parameter Store for model/API/JWT/database secrets; IAM roles for S3 and Bedrock access; no static AWS keys.
+- **Network boundary:** CloudFront/WAF plus ALB or API Gateway; app tasks/functions in private subnets; RDS reachable only from backend/worker security groups.
+- **Observability:** CloudWatch logs, metrics, traces, dashboards, and alarms for request, grounding, cost, scheduler, anomaly, and gold-eval signals.
+- **IAM:** least-privilege task/Lambda roles scoped per service and environment.
+
+### 19.2 Lambda Compute Rationale
+
+Lambda is a strong fit for bursty, event-driven ingestion dispatch, scheduled grading kicks, corpus evaluation triggers, lightweight API handlers, alert delivery, and idle-cost-controlled jobs. Lambda is not a good default for long-running local model inference, heavyweight CPU/GPU workloads, large PDF OCR/rasterization, or anything that repeatedly loads the local CrossEncoder.
+
+If parts of the API move to Lambda, use API Gateway + Lambda + RDS Proxy, provisioned concurrency for latency-sensitive routes, small deployment packages, and Bedrock-hosted model calls rather than local model loading. Keep the current container path for workloads that need warm dependencies, long timeouts, or a persistent async DB pool.
+
+| Compute option | Best fit | Trade-off |
+|---|---|---|
+| Lambda | Bursty jobs, scheduled triggers, lightweight handlers | Cold starts, timeout limits, RDS Proxy needed for pooling |
+| ECS Fargate | Current backend, OCR/PDF work, local reranker, persistent pool | Higher idle floor than Lambda |
+| App Runner | Simple container hosting | Less networking/control flexibility than ECS |
+| EKS | Large multi-service platform | Operational overhead is not justified here |
+| EC2 | Full host control or special hardware | Manual patching/scaling burden |
+
+### 19.3 Bedrock Model Switching and Cost Optimization
+
+Use Amazon Bedrock for managed model access and centralized governance where available. Route by task class: fast/cheap models for summarization, classification, grading prechecks, and query expansion; stronger models for final grounded answer generation or complex clinical reasoning. Keep `JudgeAgent` reproducible with pinned model, temperature, and rubric version.
+
+Cost controls:
+
+- Track per-model token usage and cost via `MODEL_PRICING_JSON` or a Bedrock-aware equivalent.
+- Configure AWS Budgets and CloudWatch anomaly alerts for model cost spikes.
+- Use prompt caching, exact cache, and semantic cache only where safe.
+- Run refusal and grounding gates before caching generated answers.
+- Preserve exact numeric grounding regardless of model selection.
+
+### 19.4 Reliability and Scalability
+
+- Async request path with async SQLAlchemy sessions.
+- DB pooling in containers; RDS Proxy when Lambda connects to RDS.
+- PostgreSQL advisory-lock singleton guards for scheduled jobs across replicas.
+- Idempotent jobs around document content hashes, audit IDs, and gold run IDs.
+- Queue/event-backed PDF processing at scale: S3 upload event -> SQS/EventBridge -> worker/Lambda/ECS task.
+- Separate autoscaling policies for frontend, backend, Chainlit, and workers.
+- Multi-AZ RDS, S3 durability, backups, and restore tests.
+- Health checks and readiness checks via `/health`, plus post-deploy upload/chat smoke tests.
+- WAF and app-level rate limits.
+- CloudWatch dashboards and alarms for latency, 5xx, cache hit rate, grounding failure, cost, anomaly flags, and gold-eval regressions.
+
+### 19.5 Security
+
+- No hardcoded secrets; production secrets injected from Secrets Manager or SSM.
+- JWT auth for document endpoints and an environment-controlled anonymous-chat toggle.
+- CORS restricted by environment.
+- Upload validation by magic bytes, MIME allow-list, size, and page count.
+- S3 bucket policies, no public ACLs, KMS encryption for S3/RDS/secrets.
+- IAM task/Lambda roles, no static AWS keys.
+- Private RDS access through VPC security groups.
+- Least-privilege Bedrock access by model/action/environment.
+- Audit logs and anomaly flags retained for investigation.
+- PII/sensitive-output guardrails before response send and cache writes.
+
+### 19.6 CI/CD Plan
+
+No workflows are active until `.github/workflows/` exists. The intended pipeline is:
+
+- PR checks: backend tests, frontend tests, lint/typecheck where available, Docker build, and migration check.
+- Main branch deploy gated by explicit `needs:` dependencies.
+- Build and push container images to ECR if containers are retained.
+- Deploy infrastructure with Terraform, CDK, or CloudFormation.
+- Run Alembic migrations as a one-off task before backend rollout.
+- Maintain dev/staging/prod environments with separate secrets and databases.
+- Require manual approval for production.
+- Inject secrets at runtime from Secrets Manager/SSM.
+- Run smoke tests after deploy: `/health`, OpenAPI docs, minimal upload, and minimal chat.
+- Roll back to previous image/task definition and use RDS point-in-time recovery for data rollback when needed.
+- Add gold-eval floor gating only after corpus checksums and expected answers are pinned and verified.
+
+### 19.7 Observability Targets, Alerts, and Owners
 
 | Metric | Source | Target | Alert condition | Owner |
 |---|---|---|---|---|
@@ -1110,22 +1191,29 @@ Explicit, since the assessment invites noting them rather than treating them as 
 # ── App ──────────────────────────────────────────────
 ENVIRONMENT=development
 LOG_LEVEL=info
+BACKEND_URL=http://backend:6100
 
 # ── Database ─────────────────────────────────────────
-DATABASE_URL=postgresql://postgres:postgres@relational_db:5432/ragdb
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=postgres
+POSTGRES_DB=postgres
+DATABASE_URL=postgresql+asyncpg://postgres:postgres@relational_db:5432/postgres
 
 # ── LLM / Embedding Providers ────────────────────────
 ANTHROPIC_API_KEY=
-OPENAI_API_KEY=                      # used for embeddings if not self-hosting
-GEMINI_API_KEY=                      # Google Gemini API Key for fast/flexible models
-OPUS_API_KEY=                        # Dedicated Claude Opus API Key for high-reasoning evaluation
-VOYAGE_API_KEY=                      # optional — Voyage embeddings, commonly paired with Claude generation
+# Used for embeddings if not self-hosting
+OPENAI_API_KEY=
+# Google Gemini API key for fast/flexible models
+GEMINI_API_KEY=
+# Optional Voyage embeddings, commonly paired with Claude generation
+VOYAGE_API_KEY=
 EMBEDDING_MODEL=text-embedding-3-small
 EMBEDDING_DIM=1536
 GENERATION_MODEL_PRIMARY=claude-sonnet-5
 GENERATION_MODEL_FAST=claude-haiku-4-5
-EVALUATION_MODEL_OPUS=claude-opus-3  # Dedicated Claude Opus model for Evaluation & Grading Agent
-RERANK_PROVIDER=                     # optional — hosted reranker; unset uses the local cross-encoder (§17)
+# Optional hosted reranker; unset uses the local cross-encoder (§17)
+RERANK_PROVIDER=
+MODEL_PRICING_JSON={"claude-sonnet-5":{"input_per_mtok":3.0,"output_per_mtok":15.0},"claude-haiku-4-5":{"input_per_mtok":0.8,"output_per_mtok":4.0}}
 
 # ── Chunking ─────────────────────────────────────────
 CHUNK_SIZE_TOKENS=480
@@ -1136,6 +1224,7 @@ STRUCTURE_AWARE_CHUNKING=true
 MAX_PDF_SIZE_MB=20
 MAX_PDF_PAGES=300
 ALLOWED_MIME_TYPES=application/pdf
+REQUEST_BODY_SIZE_LIMIT_BYTES=26214400
 
 # ── Table/Figure Structure Detection & Page Images ───
 TABLE_DETECTION_METHOD=pdfplumber     # pdfplumber | heuristic_grid
@@ -1155,9 +1244,6 @@ AGENT_TRACE_LOGGING_ENABLED=true
 # ── Reranker (local ML model) ────────────────────────
 RERANKER_MODEL=cross-encoder/ms-marco-MiniLM-L-6-v2
 
-# ── Citation Strategy (experimental — see §16) ───────
-SEARCH_RESULT_BLOCKS_ENABLED=false    # flip only after the §16 spike confirms API/version support
-
 # ── Retrieval ────────────────────────────────────────
 RETRIEVAL_TOP_K=20
 RERANK_TOP_N=5
@@ -1167,6 +1253,7 @@ RRF_K=60
 HNSW_M=16
 HNSW_EF_CONSTRUCTION=64
 HNSW_EF_SEARCH=40
+GROUNDING_TSVECTOR_CONFIG=english
 
 # ── Caching ───────────────────────────────────────────
 CACHE_BACKEND=postgres               # postgres | redis
@@ -1186,6 +1273,7 @@ MAX_OUTPUT_TOKENS_SUMMARY=200
 # ── Rate Limiting ─────────────────────────────────────
 RATE_LIMIT_PER_SESSION_PER_HOUR=30
 RATE_LIMIT_WINDOW_SECONDS=3600
+RATE_LIMIT_PER_IP_PER_HOUR=100
 
 # ── Security ───────────────────────────────────────────
 JWT_SECRET=
@@ -1197,6 +1285,8 @@ CHAINLIT_AUTH_SECRET=
 # ── Storage ────────────────────────────────────────────
 UPLOAD_STORAGE_BACKEND=local          # local | s3
 S3_BUCKET_NAME=
+S3_DOCUMENT_BUCKET=
+S3_PAGE_IMAGE_BUCKET=
 AWS_REGION=
 
 # ── Scheduling ─────────────────────────────────────────
@@ -1207,10 +1297,8 @@ GRADING_JOB_CRON=0 2 * * *
 RESPONSE_GRADING_SAMPLE_SIZE=50
 ANOMALY_DETECTION_ZSCORE_THRESHOLD=3.0
 ANOMALY_DETECTION_BASELINE_LOOKBACK_DAYS=14
-MODEL_PRICING_JSON={"claude-sonnet-5":{"input_per_mtok":3.0,"output_per_mtok":15.0},"claude-haiku-4-5":{"input_per_mtok":0.8,"output_per_mtok":4.0}}
 GROUNDING_NUMERIC_CHECK_ENABLED=true
 GROUNDING_NUMERIC_TOLERANCE=0.0      # generated clinical numeric claims must match cited-source values exactly
-GROUNDING_TSVECTOR_CONFIG=english
 JUDGE_MODEL=claude-haiku-4-5
 JUDGE_TEMPERATURE=0.0
 JUDGE_RUBRIC_VERSION=1
@@ -1223,6 +1311,8 @@ GOLD_EVAL_REPORT_PATH=./gold_standard/gold_eval_report.md
 GOLD_EVAL_CRON=0 3 * * *
 GOLD_EVAL_SAMPLE_SIZE=
 GOLD_EVAL_BASELINE_LOOKBACK_RUNS=14
+GOLD_EVAL_MIN_OVERALL_SCORE=90.0
+GOLD_EVAL_REGRESSION_POINTS=5.0
 GOLD_EVAL_DEVIATION_ABS_DROP=5.0
 GOLD_EVAL_DEVIATION_ZSCORE=3.0
 GOLD_EVAL_ALERT_ON_VERSION_CHANGE=false

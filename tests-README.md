@@ -1,16 +1,27 @@
 # Test Execution & Verification Guide (tests-README FILE)
 
-This document is the canonical reference for executing automated tests on the **Last Mile Health RAG** system. It details the setup, tools, and execution procedures for both the backend (FastAPI) and frontend (Next.js & Playwright) testing suites.
+This document is the canonical reference for executing automated tests on the **Last Mile Health RAG** system. It details the setup, tools, and execution procedures for the backend FastAPI suite, the current Next.js deterministic test suite, and the planned Playwright e2e suite.
 
 ---
 
 ## 1. Testing Architecture Overview
 
-Automated tests are divided into three isolated, progressive layers to guarantee speed, completeness, and reliability:
+Automated tests are divided into three isolated, progressive layers:
 
 1. **Backend Deterministic Suite (`pytest`):** Validates routes, schemas, database models, computed columns, Alembic migrations, rate limits, and caching systems. Highly optimized, isolated from network requests, and fully mocked.
-2. **Frontend Component Suite (`Jest` & `React Testing Library`):** Validates the Next.js documents dashboard, upload state machinery, deletions, and layout edge cases.
-3. **End-to-End (E2E) Integration Suite (`Playwright`):** Simulates genuine user flows (logging in, uploading a document, waiting for status transitions, loading the Chainlit UI, asking a query, and verifying citations and page images).
+2. **Frontend Deterministic Suite (`node --test`):** Validates the Next.js document upload helper layer, upload state machinery, deletions, polling merge behavior, and auth header inclusion without a browser.
+3. **End-to-End (E2E) Integration Suite (`Playwright`, planned):** Intended to simulate browser flows for logging in, uploading a document, waiting for status transitions, loading chat, asking a query, and verifying citations/page images. The current frontend package does not yet include Playwright dependency, config, or specs.
+
+## Current Reviewer Test Status
+
+| Tier | Status | Last known result / note |
+|---|---|---|
+| Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> `120 passed, 12 skipped, 4 warnings in 41.03s` in the verified BC16-BC28 run. |
+| Backend targeted corrective suites | Verified complete | Scheduler singleton, cost, rate-limit indexes, semantic-cache model scope, numeric grounding, anomaly detection, judge reproducibility, gold-standard, and `-m golden_set` suites passed in the verified BC16-BC28 run. |
+| Frontend deterministic suite | Verified complete | `npm test --prefix frontend -- --runInBand` passed; latest local run after docs update: `1 passed`. |
+| Playwright e2e | Not complete | No Playwright dependency, config, or spec exists yet. |
+| Real gold manual/CI score runs | Not trusted yet | Requires corpus fetch, TOFU checksum pinning, indexing, and human expected-answer verification before running score-floor checks. |
+| Clean-clone run | Not complete | Must be run from a fresh clone before claiming reviewer-ready reproducibility. |
 
 ---
 
@@ -253,7 +264,7 @@ To run deterministic frontend tests:
 
 ## 4. End-to-End Integration Tests (`Playwright`)
 
-Playwright tests execute in a real headless browser environment to ensure backend services, relational databases, and frontend components communicate correctly. The current frontend package does not yet include a Playwright dependency, config file, or e2e spec; treat the commands below as the intended smoke-test entry points once that scaffold is added.
+Playwright tests should execute in a real headless browser environment to ensure backend services, relational databases, and frontend components communicate correctly. The current frontend package does not yet include a Playwright dependency, config file, or e2e spec; treat the commands below as the intended smoke-test entry points once that scaffold is added.
 
 ### 4.1 Prerequisites
 Before running E2E tests, ensure the local Docker containers are running and healthy:
@@ -272,8 +283,8 @@ Set `PLAYWRIGHT_BASE_URL` in the shell when running specs against a non-default 
 PLAYWRIGHT_BASE_URL=http://localhost:3000 npx playwright test --prefix frontend
 ```
 
-### 4.2 Running Playwright Tests
-To execute the E2E suite and verify the complete ingestion-to-citation-retrieval pipeline:
+### 4.2 Intended Playwright Commands
+After Playwright is added, use these commands to execute the E2E suite and verify the complete ingestion-to-citation-retrieval pipeline:
 
 *   **Execute all E2E specs:**
     ```sh
@@ -292,7 +303,22 @@ To execute the E2E suite and verify the complete ingestion-to-citation-retrieval
 
 ---
 
-## 5. Troubleshooting Test Environments
+## 5. Dependency and Build Reliability Notes
+
+- The backend Docker build originally failed on pip cache/hash corruption. The fix is to install requirements without a pip cache mount:
+
+    ```dockerfile
+    RUN pip install --no-cache-dir --default-timeout=180 --retries=10 -r /requirements.txt
+    ```
+
+- A later empty wheel payload/hash failure occurred in the `sentence-transformers` / torch dependency chain. The backend now pins CPU-only `torch==2.9.1+cpu` via the official PyTorch CPU wheel index before `sentence-transformers`, preserving the local CrossEncoder reranker while avoiding CUDA wheel downloads.
+- The backend image is built from the repository root with `.dockerignore` allowing `backend/`, `gold_standard/`, and `pytest.ini` into the image. This is required so scheduled gold evaluation imports work in production-like containers.
+- `poppler-utils` and `tesseract-ocr` are required at the container/system layer for PDF rasterization and OCR. They are mocked in deterministic tests but installed in the backend image for manual and integration runs.
+- The Chainlit image uses `uv pip install --system --no-cache -r requirements.txt` to avoid very slow pip resolver backtracking in the Chainlit/OpenTelemetry dependency tree.
+
+---
+
+## 6. Troubleshooting Test Environments
 
 *   **Error: Database Connection Refused / `ConnectionRefusedError`**
     *   *Cause:* The test runner is trying to connect to a Postgres container that is down or uninitialized.

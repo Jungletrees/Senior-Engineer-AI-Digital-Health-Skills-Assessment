@@ -1,6 +1,6 @@
 # Development Build Plan (plan.md)
 
-## Current Status: [ ] BC16-BC28 Corrective Implementation In Progress
+## Current Status: [x] BC16-BC28 Corrective Implementation Verified; Checklist Documentation Pass Completed Locally
 **Active Build Cycle:** BC16-BC28 - Final Tests, Deployment Hardening, Scheduled Grading, and Gold-Standard Correctives
 
 ---
@@ -113,7 +113,7 @@ Implement exact-cache lookup/write, semantic-cache lookup/write, prompt-cache co
 
 ## Active Cycle: BC16-BC28
 
-**Status:** [x] Corrective implementation and deterministic verification completed; documentation/handover fold-back in progress. Playwright remains unscaffolded in the current frontend package, and gold manual/CI runs require corpus fetch/checksum pinning plus human expected-answer verification before scores are meaningful.
+**Status:** [x] Corrective implementation and deterministic verification completed; documentation/checklist fold-back completed locally in this buildrun. Playwright remains unscaffolded in the current frontend package, Chainlit is not yet wired to `/api/v1/chat`, UI-level Chicago superscript citations are incomplete, upload-to-worker enqueueing is not wired in the route, and gold manual/CI runs require corpus fetch/checksum pinning plus human expected-answer verification before scores are meaningful.
 
 ### Objective
 Complete the BC16-BC20 final test/deployment/docs/scheduler scope and BC21-BC28 corrective scope without restarting from scratch. This includes deterministic/gold-set test consolidation, frontend/Playwright coverage, deploy hardening, singleton scheduled jobs, cost/rate-limit/cache correctness, numeric-aware grounding, reproducible `JudgeAgent` grading, fixed gold-standard corpus evaluation, deviation alerts, and documentation fold-back.
@@ -167,8 +167,21 @@ Complete the BC16-BC20 final test/deployment/docs/scheduler scope and BC21-BC28 
 - [x] BC20-BC28 settings fields added in `backend/app/settings.py`.
 - [x] `backend/app/core/cost.py` added and `/chat` cost finalization started.
 - [x] Duplicate idempotency polling changed to roll back before sleeping so it does not hold a database connection.
-- [x] Semantic cache lookup/write scoped by embedding model in code; migration/model/test coverage still pending.
+- [x] Semantic cache lookup/write scoped by embedding model with migration/model/test coverage.
 - [x] `backend/alembic/versions/0013_corrective_grading_schema.py` added for corrective schema changes.
 - [x] `backend/app/agents/judge_agent.py` added as the production `JudgeAgent` boundary with injectable client and deterministic fallback.
 - [x] `backend/app/security/numeric_grounding.py` added and `guardrails.py` wired to fail unsupported clinical numeric claims.
-- [x] `gold_standard/` package copied from corrective builds; `client.py` and `runner.py` still require repo-native SQLAlchemy/`/chat`/`JudgeAgent` adaptation.
+- [x] `gold_standard/` package adapted to the repo-native `/chat`, SQLAlchemy persistence, `JudgeAgent`, reporting, and deviation-alert paths.
+
+### Checklist Documentation Pass - 2026-07-14
+
+- [x] Rewrote root `README.md` as reviewer-facing project documentation instead of starter assessment instructions.
+- [x] Updated `tests-README.md` to distinguish implemented deterministic tests from planned Playwright e2e coverage.
+- [x] Rewrote `frontend/README.md` and added `frontend/.env.local.example`.
+- [x] Updated `local-setup.md`, `DEPLOYMENT.md`, `.env.example`, and `gold_standard/README.md`.
+- [x] Updated `build-plans-architecture/ARCHITECTURE (4).md` with dependency/build reliability notes, current frontend/e2e status, AWS/Lambda/Bedrock deployment planning, and synced env appendix.
+- [x] Added `build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md` with section-by-section complete/partial/not-complete status.
+- [x] Replaced the backend home page content so the product-facing root no longer serves assessment instructions.
+- [x] Updated `docker-compose.yaml` with allow-listed environment injection, database dependency ordering, and basic DB/backend health checks.
+- [ ] Clean-clone dry run not performed in this buildrun.
+- [ ] No tag, archive, or repository access-control changes performed in this buildrun.

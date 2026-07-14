@@ -1,72 +1,108 @@
 # Local Setup
 
 ## Prerequisites
-- Docker Engine 24+ (tested on 29.3.1)
-- Docker Compose v2+ (tested on v5.1.0)
-- On Windows, use Docker Desktop with WSL2 integration, and keep the repo inside the WSL2 filesystem for reasonable build performance.
+
+- Docker Engine 24+ (last verified locally on Docker 29.3.1)
+- Docker Compose v2+
+- Node 20+ only for running frontend commands outside Docker
+- Python 3.12 only for running backend or gold-standard commands outside Docker
+
+On Windows, use Docker Desktop with WSL2 integration and keep the repository inside the WSL2 filesystem for better build performance.
 
 ## Setup
-```bash
+
+```sh
 git clone <your-fork-url>
 cd Senior-Engineer-AI-Digital-Health-Skills-Assessment
+cp .env.example .env
 docker compose -p assessment up -d --build
 ```
-Build completes in well under a minute with a warm cache, and a few minutes on a clean build. See the known issue below if the `chainlit_app` step appears to hang.
+
+If the database volume is new or has been reset, run migrations:
+
+```sh
+docker compose -p assessment exec backend alembic upgrade head
+```
 
 ## Services
 
 | Service | URL | Description |
-| --- | --- | --- |
-| Frontend / Instructions | http://localhost:3000 | Serves the assessment instructions |
-| Chainlit Chat UI | http://localhost:8000 | Chat interface |
+|---|---|---|
+| Frontend | http://localhost:3000 | Project status page and entry point |
+| Documents UI | http://localhost:3000/documents | PDF upload and document management |
+| Chainlit | http://localhost:8000 | Containerized chat shell; backend wiring is still a limitation |
 | Backend API | http://localhost:6100 | FastAPI backend |
-| PostgreSQL | localhost:5432 | Database (pgvector) |
+| Backend health | http://localhost:6100/health | App and database health |
+| Backend docs | http://localhost:6100/docs | OpenAPI documentation |
+| PostgreSQL | localhost:5432 | PostgreSQL 16 with pgvector |
 
 ## Verifying the Setup
-```bash
-docker compose -p assessment ps
-```
-All four containers should show `Up`. No healthchecks are defined in the compose file, so `Up` is expected — `healthy` will not appear.
 
-```bash
-curl -o /dev/null -sw "%{http_code}\n" http://localhost:3000
-curl -o /dev/null -sw "%{http_code}\n" http://localhost:8000
-curl -o /dev/null -sw "%{http_code}\n" http://localhost:6100
+```sh
+docker compose -p assessment ps
+curl -s http://localhost:6100/health
+curl -I http://localhost:6100/docs
+curl -I http://localhost:3000
+curl -I http://localhost:3000/documents
+curl -I http://localhost:8000
 docker compose -p assessment exec -T relational_db pg_isready -U postgres
 ```
-Each HTTP check should return `200`. Postgres should report `accepting connections`.
 
-## Known Issue: Slow chainlit_app Dependency Install
+Expected backend health response:
 
-`chainlit_app`'s dependency tree (`chainlit` → `literalai` → `traceloop-sdk` → the `opentelemetry-instrumentation-*` family) causes pip's resolver to backtrack extensively, which can stretch a plain `pip install` to 60–90+ minutes. This is a resolver characteristic, not a network or hardware issue — `docker stats` will show sustained single-core CPU use rather than a stall.
-
-The fix, already applied in `chainlit_app/Dockerfile`, is to install with `uv` instead of pip:
-```dockerfile
-RUN pip install --no-cache-dir uv
-RUN uv pip install --system --no-cache -r requirements.txt
+```json
+{"status":"ok","database":"ok"}
 ```
-This resolves the same dependency graph in under a minute.
+
+Document-management API calls require a JWT token:
+
+```sh
+curl -s -X POST http://localhost:6100/api/v1/auth/session
+```
+
+Use the returned `access_token` as `Authorization: Bearer <token>` for `/api/v1/documents*`.
+
+## Known Build Notes
+
+The backend image installs `poppler-utils` and `tesseract-ocr` at the system layer for PDF rasterization and OCR. The Docker build also pins CPU-only torch before `sentence-transformers` to avoid CUDA wheel downloads.
+
+The Chainlit dependency tree is installed with `uv pip install` in `chainlit_app/Dockerfile`. This avoids long pip resolver backtracking through the Chainlit/OpenTelemetry packages.
 
 ## Troubleshooting
 
-**Port already in use** — identify and stop the conflicting process, or remap the port in `docker-compose.yaml`:
-```bash
+**Port already in use**
+
+```sh
 ss -ltnp | grep -E ':3000|:8000|:6100|:5432'
 ```
 
-**Build fails or seems stuck** — rebuild the affected service directly with verbose output:
-```bash
-docker build --no-cache --progress=plain -t debug ./chainlit_app
-```
-Swap in `./backend` or `./frontend` as needed. If it's the `chainlit_app` pip step, see the known issue above before assuming it's frozen.
+Stop the conflicting process or remap the port in `docker-compose.yaml`.
 
-**Container exits immediately**:
-```bash
+**Backend database errors**
+
+```sh
+docker compose -p assessment exec backend alembic upgrade head
+docker compose -p assessment logs backend
+```
+
+**Build fails or seems stuck**
+
+```sh
+docker compose -p assessment build backend
+docker compose -p assessment build chainlit
+docker compose -p assessment build frontend
+```
+
+**Container exits immediately**
+
+```sh
 docker compose -p assessment logs <service>
 ```
-Service names: `frontend`, `chainlit`, `backend`, `relational_db`.
+
+Service names are `frontend`, `chainlit`, `backend`, and `relational_db`.
 
 ## Shutdown
-```bash
+
+```sh
 docker compose -p assessment down
 ```

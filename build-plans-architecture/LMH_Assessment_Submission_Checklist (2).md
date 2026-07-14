@@ -1,6 +1,8 @@
 # Last Mile Health — Senior Engineer, AI & Digital Health
 ## Skills Assessment: Pre-Submission Checklist
 
+> Checklist audit status for this repository is tracked in `build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md`. Do not infer completion from unchecked original boxes; use that status document for the current pass/fail/partial notes.
+
 > Use this as a final gate before you submit the forked repo link. Go through every box. Where a box can't be checked, either fix the gap or add an explicit note in the README under "Assumptions & Known Limitations" — the instructions explicitly allow assumptions as long as they're stated.
 
 Stack assumed below (adjust section headers if you diverged): **FastAPI + pgvector + PostgreSQL + Next.js + Chainlit, Docker/docker-compose, `uv` for Python dependency management.**
@@ -322,4 +324,3 @@ gh api -X PATCH repos/<owner>/<repo> -F archived=true
 
 ### Step 10 — Report back
 Output a final pass/fail summary for Steps 1–9, the confirmed default branch, the tagged submission reference (`<fork_url>/tree/lmh-submission`), and repo visibility/archive status — this is what gets handed to the human for the actual submission message.
-

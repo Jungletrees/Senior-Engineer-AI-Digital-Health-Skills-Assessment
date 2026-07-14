@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Frontend
 
-## Getting Started
+This is the Next.js frontend for the Last Mile Health RAG platform. It currently provides the document-management experience at `/documents`: upload validation, progress display, document polling, status rendering, and optimistic delete.
 
-First, run the development server:
+The root page renders the backend project status page from `http://localhost:6100/`. A full browser chat interface with Chicago-style superscript citations is not implemented in this package yet; the backend chat contract exists at `/api/v1/chat`, and the Chainlit container is retained separately.
 
-```bash
+## Reviewer Status
+
+| Area | Status | Notes |
+|---|---|---|
+| `/documents` route | Partial | UI exists for upload, progress, document polling, status display, and delete. End-to-end upload-to-indexed verification depends on wiring the backend upload route to enqueue the ingestion worker. |
+| API helper layer | Verified complete for deterministic scope | `tests/documentsCore.test.mjs` covers base URL resolution, auth headers, validation, upload progress, polling merge, optimistic delete, and rollback. |
+| Browser chat UI | Not complete | No Next.js chat page is implemented. Chainlit is the intended chat surface after backend wiring. |
+| Chicago citations | Not complete | No superscript marker or footnote components exist yet. |
+| Playwright | Not complete | No dependency, config, or e2e spec is scaffolded. |
+| Responsive browser pass | Not complete | Manual/browser checks at 375, 768, 1024, and 1440 px remain to be run. |
+
+## Local Development
+
+```sh
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000 for the root status page and http://localhost:3000/documents for the document UI.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Set a non-default backend URL in `frontend/.env.local`:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```sh
+NEXT_PUBLIC_API_BASE_URL=http://localhost:6100/api/v1
+```
 
-## Learn More
+## Tests
 
-To learn more about Next.js, take a look at the following resources:
+```sh
+npm test -- --runInBand
+```
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+The current test suite uses Node's built-in test runner against `tests/documentsCore.test.mjs`. It covers upload validation, API helper behavior, upload progress, polling merge behavior, optimistic delete/rollback, and auth-header inclusion.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Current Limitations
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- No Playwright dependency, config, or e2e spec is scaffolded yet.
+- No UI-level chat message list, streaming state, superscript citation markers, or Chicago-style footnote list exists in this package.
+- Browser/device responsive verification for 375, 768, 1024, and 1440 px remains a manual follow-up.
