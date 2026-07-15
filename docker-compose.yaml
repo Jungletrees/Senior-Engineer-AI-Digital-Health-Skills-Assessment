@@ -41,6 +41,15 @@ services:
       AWS_REGION: ${AWS_REGION:-us-east-1}
       ENABLE_SCHEDULED_JOBS: ${ENABLE_SCHEDULED_JOBS:-true}
     restart: always
+    # Uploaded PDFs and rasterized page images are written to the container's writable
+    # layer under the local storage backend. Without these volumes a `docker compose up
+    # --build`/recreate wipes every uploaded file while its `documents`/`chunks` rows
+    # survive in db_volume, leaving documents that report `indexed` with no source file
+    # (ingestion, re-ingestion, and page-image fetch then fail). Named volumes keep the
+    # files across container recreation, matching the durability the DB already has.
+    volumes:
+      - uploads_volume:/usr/src/LMH/app/uploads
+      - page_images_volume:/usr/src/LMH/page_images
     depends_on:
       relational_db:
         condition: service_healthy
@@ -101,3 +110,5 @@ services:
 
 volumes:
   db_volume:
+  uploads_volume:
+  page_images_volume:
