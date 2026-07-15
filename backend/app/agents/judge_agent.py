@@ -82,6 +82,76 @@ class AnthropicJudgeModelClient:
             raise RuntimeError(f"JudgeAgent returned non-numeric score: {text!r}") from exc
 
 
+class GeminiJudgeModelClient:
+    """Hosted judge backed by Gemini.
+
+    The judge scores answers the generation model produced, so it must be a real model —
+    not the deterministic keyword heuristic. Without this, a Gemini-only deployment would
+    generate answers with Gemini and grade them with a word-overlap fallback, and the gold
+    score would measure the heuristic, not the answers.
+    """
+
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+    def __init__(self, api_key: str, model: str, temperature: float) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+
+    async def score(self, criterion: str, question: dict[str, Any], answer: str, rubric: dict[str, Any]) -> float:
+        prompt = _judge_prompt(criterion, question, answer, rubric)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"{self.BASE_URL}/models/{self.model}:generateContent",
+                headers={"x-goog-api-key": self.api_key},
+                json={
+                    "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                    "generationConfig": {
+                        "temperature": self.temperature,
+                        "maxOutputTokens": 16,
+                    },
+                },
+            )
+            response.raise_for_status()
+        text = _extract_gemini_text(response.json())
+        try:
+            return max(0.0, min(1.0, float(text.strip())))
+        except ValueError as exc:
+            raise RuntimeError(f"JudgeAgent returned non-numeric score: {text!r}") from exc
+
+
+class OpenAIJudgeModelClient:
+    """Hosted judge backed by OpenAI."""
+
+    URL = "https://api.openai.com/v1/chat/completions"
+
+    def __init__(self, api_key: str, model: str, temperature: float) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.temperature = temperature
+
+    async def score(self, criterion: str, question: dict[str, Any], answer: str, rubric: dict[str, Any]) -> float:
+        prompt = _judge_prompt(criterion, question, answer, rubric)
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                self.URL,
+                headers={"Authorization": f"Bearer {self.api_key}"},
+                json={
+                    "model": self.model,
+                    "temperature": self.temperature,
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+            )
+            response.raise_for_status()
+        choices = response.json().get("choices") or []
+        text = str((choices[0].get("message") or {}).get("content") or "") if choices else ""
+        try:
+            return max(0.0, min(1.0, float(text.strip())))
+        except ValueError as exc:
+            raise RuntimeError(f"JudgeAgent returned non-numeric score: {text!r}") from exc
+
+
 class JudgeAgent:
     """Agent boundary used by scheduled grading, gold eval, and deviation alerts."""
 
@@ -152,10 +222,41 @@ class JudgeAgent:
 
 
 def _default_client(model: str, temperature: float) -> JudgeModelClient:
-    if settings.anthropic_api_key:
+    """Select the judge provider from the model name and configured keys.
+
+    Mirrors the generation router: the provider is derived from the model, and a placeholder
+    key counts as absent. If nothing is configured, the deterministic judge is used and the
+    caller is warned — the gold score then reflects a heuristic, not an LLM judge, which is a
+    fact the reviewer must see rather than have hidden.
+    """
+    import os
+
+    from app.core.model_router import is_real_key
+
+    lowered = model.lower()
+    if lowered.startswith("gemini") and is_real_key(os.getenv("GEMINI_API_KEY", "")):
+        return GeminiJudgeModelClient(os.environ["GEMINI_API_KEY"], model, temperature)
+    if lowered.startswith(("gpt-", "o1", "o3", "o4")) and is_real_key(os.getenv("OPENAI_API_KEY", "")):
+        return OpenAIJudgeModelClient(os.environ["OPENAI_API_KEY"], model, temperature)
+    if is_real_key(settings.anthropic_api_key):
         return AnthropicJudgeModelClient(model, temperature)
-    logger.warning("judge_agent.hosted_client_missing fallback=deterministic")
+
+    logger.warning(
+        "judge_agent.hosted_client_missing model=%s fallback=deterministic "
+        "(gold scores reflect a keyword heuristic, not an LLM judge)",
+        model,
+    )
     return DeterministicJudgeModelClient()
+
+
+def _extract_gemini_text(payload: dict[str, Any]) -> str:
+    for candidate in payload.get("candidates") or []:
+        parts = (candidate.get("content") or {}).get("parts") or []
+        # Skip Gemini 3 reasoning parts; only the answer text is a score.
+        text = "".join(str(p.get("text", "")) for p in parts if not p.get("thought")).strip()
+        if text:
+            return text
+    return ""
 
 
 def _judge_prompt(criterion: str, question: dict[str, Any], answer: str, rubric: dict[str, Any]) -> str:
