@@ -141,23 +141,36 @@ class GeminiEmbeddingClient:
         self.dimensions = dimensions or get_embedding_dim()
         self.timeout_seconds = timeout_seconds
 
-    # `batchEmbedContents` rejects more than 100 requests in one call with a bare 400. A
-    # single document produces far more chunks than that, so the whole document failed to
-    # index. Batches are split here rather than left to the caller.
-    BATCH_LIMIT = 100
+    # `batchEmbedContents` rejects more than 100 requests in one call with a bare 400, and —
+    # critically on a free tier — every item in the batch counts as one request against the
+    # per-minute quota. A batch at the 100 ceiling therefore burns a whole ~100 req/min free
+    # allowance in one call and 429s. The batch size and an inter-batch pace are read from
+    # settings so the free tier stays under quota while a paid tier can turn pacing off.
+    @property
+    def _batch_limit(self) -> int:
+        from app.settings import settings
+
+        return max(1, min(settings.embedding_batch_limit, 100))
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
+        import asyncio
+
+        from app.settings import settings
+
         api_key = os.getenv("GEMINI_API_KEY", "")
         if not _is_real_key(api_key):
             raise RuntimeError("GEMINI_API_KEY is not configured for hosted embeddings")
 
+        batch_limit = self._batch_limit
+        rpm = settings.embedding_requests_per_minute
         model_path = f"models/{self.model}"
         vectors: list[list[float]] = []
         async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
-            for start in range(0, len(texts), self.BATCH_LIMIT):
-                window = texts[start : start + self.BATCH_LIMIT]
+            batches = list(range(0, len(texts), batch_limit))
+            for index, start in enumerate(batches):
+                window = texts[start : start + batch_limit]
                 payload = {
                     "requests": [
                         {
@@ -171,15 +184,17 @@ class GeminiEmbeddingClient:
                         for text in window
                     ]
                 }
-                response = await client.post(
+                body = await _gemini_post_with_retry(
+                    client,
                     f"{self.BASE_URL}/{model_path}:batchEmbedContents",
-                    headers={"x-goog-api-key": api_key},
-                    json=payload,
+                    api_key,
+                    payload,
                 )
-                response.raise_for_status()
-                vectors.extend(
-                    _l2_normalize(item["values"]) for item in response.json()["embeddings"]
-                )
+                vectors.extend(_l2_normalize(item["values"]) for item in body["embeddings"])
+                # Pace the next batch so the rolling request rate stays under the free-tier
+                # quota. Skip the pause after the final batch — nothing follows it.
+                if rpm > 0 and index < len(batches) - 1:
+                    await asyncio.sleep((len(window) / rpm) * 60.0)
         return vectors
 
 
@@ -732,6 +747,60 @@ def _hash_embedding(text_value: str, dimensions: int) -> list[float]:
                 break
         digest = hashlib.sha256(digest).digest()
     return values
+
+
+async def _gemini_post_with_retry(
+    client: httpx.AsyncClient,
+    url: str,
+    api_key: str,
+    payload: dict[str, Any],
+    max_attempts: int = 7,
+) -> dict[str, Any]:
+    """POST to Gemini, retrying transient 429/5xx with backoff.
+
+    Gemini's free tier limits requests per minute, and a 659-page corpus produces many
+    embedding batches. Without this, the first 429 failed the whole document — which is
+    exactly what stalled ingestion. A rate limit is transient, so it is retried (honoring
+    Retry-After when present) rather than treated as a permanent error. A 4xx that is not 429
+    is a real client error and is raised immediately.
+
+    The backoff climbs to 60s and runs enough attempts (2+4+8+16+32+60 ≈ 122s of waiting)
+    that a request stuck behind a per-minute quota can wait the window out instead of giving
+    up inside it — the failure mode that a 5-attempt/30s cap could not recover from.
+    """
+    import asyncio
+
+    delay = 2.0
+    for attempt in range(1, max_attempts + 1):
+        response = await client.post(url, headers={"x-goog-api-key": api_key}, json=payload)
+        if response.status_code == 429 or response.status_code >= 500:
+            if attempt == max_attempts:
+                response.raise_for_status()
+            wait = _retry_after_seconds(response) or delay
+            logger.warning(
+                "gemini.rate_limited status=%s attempt=%s/%s sleeping=%.1fs",
+                response.status_code,
+                attempt,
+                max_attempts,
+                wait,
+            )
+            await asyncio.sleep(wait)
+            delay = min(delay * 2, 60.0)
+            continue
+        response.raise_for_status()
+        return response.json()
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
+def _retry_after_seconds(response: httpx.Response) -> float | None:
+    """Read a Retry-After header, tolerating the RetryInfo the API sometimes returns."""
+    header = response.headers.get("retry-after")
+    if header:
+        try:
+            return float(header)
+        except ValueError:
+            return None
+    return None
 
 
 def _is_voyage_model(model: str) -> bool:

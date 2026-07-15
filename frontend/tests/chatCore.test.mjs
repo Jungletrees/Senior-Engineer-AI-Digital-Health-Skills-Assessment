@@ -178,3 +178,14 @@ test("stylesheet collapses the sidebar into a drawer at the tablet breakpoint", 
   assert.match(css, /translateX\(-102%\)/);
   assert.match(css, /:focus-visible/);
 });
+
+test("chat page renders an honest notice when the model is degraded", async () => {
+  const source = await readFile(new URL("../src/app/page.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/app/globals.css", import.meta.url), "utf8");
+
+  // The notice is what keeps a keyless fallback honest instead of silently worse.
+  assert.match(source, /model_status\?\.mode === "degraded"/);
+  assert.match(source, /className="model-notice"/);
+  assert.match(source, /role="status"/);
+  assert.match(css, /\.model-notice \{/);
+});

@@ -34,7 +34,7 @@ This audit corresponds to `LMH_Assessment_Submission_Checklist (2).md`. It recor
 | Chat API | Backend complete | `/api/v1/chat` implements idempotency, cache lookup, retrieval/generation, filtering, audit, source chunk persistence, and structured citation metadata. |
 | Health API | Complete | `/health` checks database connectivity. |
 | Ingestion/retrieval/generation services | Mostly complete | Worker, chunking, embeddings, hybrid retrieval, rerank, and generation boundary exist. Hosted-provider calls are mocked/fallback in deterministic tests. |
-| Backend tests | Complete for deterministic scope | Full backend run: `161 passed, 12 skipped, 4 warnings in 62.95s`. |
+| Backend tests | Complete for deterministic scope | Full backend run: `220 passed, 12 skipped, 4 warnings`. Adds provider rate-limit retry (`test_gemini_retry.py`, 5) and dynamic ingestion-agent routing (`test_ingestion_routing.py`, 7) since the previous pass. |
 
 ## 3. Frontend
 
@@ -44,7 +44,7 @@ This audit corresponds to `LMH_Assessment_Submission_Checklist (2).md`. It recor
 | Chat UI | Complete on both surfaces | Next.js `/` and Chainlit `:8000` are both supported and behaviorally identical over `/api/v1/chat`. Active nav state, responsive hamburger drawer at `<=1024px`, and a loading row on submit. |
 | Citation components | Complete | Superscripts render at the end of the sentence they support, are linked to their entry in the `Sources` list, and an answer with no citations renders no `Sources` heading. Answers are rendered as inert text, never HTML. |
 | API client config | Complete | `NEXT_PUBLIC_API_BASE_URL` is supported and documented in `frontend/.env.local.example`. |
-| Frontend tests | Complete for this scope | `npm test` -> 21 passed; `tsc --noEmit` clean; Playwright `e2e/chat-ui.spec.ts` -> 16 passed in real Chromium across four viewports on both surfaces. |
+| Frontend tests | Complete for this scope | `npm test --prefix frontend` -> 23 passed; `tsc --noEmit` clean; Playwright `e2e/chat-ui.spec.ts` -> 16 passed in real Chromium across four viewports on both surfaces. |
 
 ## 4. Chainlit
 
@@ -90,7 +90,7 @@ This audit corresponds to `LMH_Assessment_Submission_Checklist (2).md`. It recor
 - **§21.3 Deployment and reviewer stack** — the local public/anonymous posture is not the production one; both chat surfaces are equivalent; ingestion is in-process and best-effort; users are not retrieval engineers, so internal vocabulary is treated as a leak.
 - **§21 (original)** — system-level OCR/poppler binaries, multimodal generation model, unverified `search_result` blocks, starting-default thresholds, single-tenant scope, CPU-only reranker inference.
 
-Environment/runtime assumptions also hold: model choices and pricing are env-driven, embedding model and dimension must match the schema (changing the model is a re-index, not a config flip), chunking defaults to 480 tokens with 15% overlap, retrieval is cosine pgvector plus RRF and rerank, upload limits are 20 MB / 300 pages / PDF-only, chat history persists in PostgreSQL, numeric claims must match the cited source exactly, and production deployment is AWS-planned but not live.
+Environment/runtime assumptions also hold: model choices and pricing are env-driven, embedding model and dimension must match the schema (changing the model is a re-index, not a config flip), chunking defaults to 480 tokens with 15% overlap, retrieval is cosine pgvector plus RRF and rerank, upload limits are 65 MB / 700 pages / PDF-only, chat history persists in PostgreSQL, numeric claims must match the cited source exactly, and production deployment is AWS-planned but not live.
 
 ## 8. Submission Mechanics
 

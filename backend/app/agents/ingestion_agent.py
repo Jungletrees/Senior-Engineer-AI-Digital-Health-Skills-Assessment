@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import logging
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, Field
-from sqlalchemy import delete
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.tracing import traced
@@ -154,6 +155,274 @@ class AnthropicMessagesClient:
         return tool_uses
 
 
+def _tool_parameters(schema: dict[str, Any]) -> dict[str, Any]:
+    """Reduce a tool input schema to the OpenAPI subset Gemini/OpenAI accept.
+
+    Keywords like ``minimum`` are valid JSON Schema but are rejected or ignored by the
+    function-declaration validators, so only the structural keys are kept.
+    """
+    properties = {
+        name: {"type": str(spec.get("type", "string"))}
+        for name, spec in (schema.get("properties") or {}).items()
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(schema.get("required") or []),
+    }
+
+
+class _HostedIngestionClient:
+    """Shared function-calling translation for hosted ingestion planners.
+
+    The bounded loop stores history in an Anthropic-style shape and never records the
+    assistant's own tool-call turn, so each provider client reconstructs the model turn from
+    the ids it previously emitted. Any translation or transport error is allowed to raise:
+    the agent loop catches it and completes the document through the deterministic per-page
+    fallback, so a planner hiccup degrades quietly instead of failing ingestion.
+    """
+
+    def __init__(self, api_key: str, model: str) -> None:
+        self.api_key = api_key
+        self.model = model
+        # tool_use.id -> {"name", "args", "signature", "native_id"}. signature/native_id are
+        # Gemini-only and must be echoed back verbatim on the replayed model turn.
+        self._emitted: dict[str, dict[str, Any]] = {}
+        self._counter = 0
+
+    def _next_id(self) -> str:
+        self._counter += 1
+        return f"call_{self._counter}"
+
+    def _record(
+        self,
+        tool_use: ToolUse,
+        *,
+        signature: str | None = None,
+        native_id: str | None = None,
+    ) -> ToolUse:
+        self._emitted[tool_use.id] = {
+            "name": tool_use.name,
+            "args": tool_use.input,
+            "signature": signature,
+            "native_id": native_id,
+        }
+        return tool_use
+
+
+class GeminiIngestionClient(_HostedIngestionClient):
+    """Drive the ingestion loop with Gemini function calling."""
+
+    BASE_URL = "https://generativelanguage.googleapis.com/v1beta"
+
+    async def next_tool_uses(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str,
+    ) -> list[ToolUse]:
+        from app.documents.chunking import _gemini_post_with_retry
+
+        declarations = [
+            {
+                "name": str(tool["name"]),
+                "description": str(tool.get("description", "")),
+                "parameters": _tool_parameters(dict(tool.get("input_schema") or {})),
+            }
+            for tool in tools
+        ]
+        payload = {
+            "systemInstruction": {"parts": [{"text": _system_prompt()}]},
+            "contents": self._to_contents(messages),
+            "tools": [{"functionDeclarations": declarations}],
+            # AUTO, not ANY: the model batches all pages into the first turn (Gemini emits
+            # parallel calls), then must be free to STOP once every page is assessed. ANY
+            # would force a call on every turn and the loop would never terminate normally.
+            "toolConfig": {"functionCallingConfig": {"mode": "AUTO"}},
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            body = await _gemini_post_with_retry(
+                client, f"{self.BASE_URL}/models/{self.model}:generateContent", self.api_key, payload
+            )
+
+        tool_uses: list[ToolUse] = []
+        for candidate in body.get("candidates") or []:
+            for part in (candidate.get("content") or {}).get("parts") or []:
+                call = part.get("functionCall")
+                if not call:
+                    continue
+                native_id = call.get("id")
+                tool_uses.append(
+                    self._record(
+                        ToolUse(
+                            id=str(native_id) if native_id else self._next_id(),
+                            name=str(call.get("name")),
+                            input=dict(call.get("args") or {}),
+                        ),
+                        # Gemini 3 rejects a replayed functionCall that is missing the
+                        # thoughtSignature it originally returned, so it is captured here.
+                        signature=part.get("thoughtSignature"),
+                        native_id=str(native_id) if native_id else None,
+                    )
+                )
+        return tool_uses
+
+    def _to_contents(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        contents: list[dict[str, Any]] = []
+        for message in messages:
+            raw = message.get("content")
+            if isinstance(raw, str):
+                contents.append({"role": "user", "parts": [{"text": raw}]})
+                continue
+            call_parts: list[dict[str, Any]] = []
+            response_parts: list[dict[str, Any]] = []
+            for block in raw if isinstance(raw, list) else []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                emitted = self._emitted.get(
+                    str(block.get("tool_use_id")), {"name": "detect_structure", "args": {}}
+                )
+                name = emitted["name"]
+                call: dict[str, Any] = {"name": name, "args": emitted.get("args") or {}}
+                response: dict[str, Any] = {"name": name, "response": _as_object(block.get("content"))}
+                if emitted.get("native_id"):
+                    call["id"] = emitted["native_id"]
+                    response["id"] = emitted["native_id"]
+                call_part: dict[str, Any] = {"functionCall": call}
+                if emitted.get("signature"):
+                    call_part["thoughtSignature"] = emitted["signature"]
+                call_parts.append(call_part)
+                response_parts.append({"functionResponse": response})
+            if call_parts:
+                contents.append({"role": "model", "parts": call_parts})
+                contents.append({"role": "user", "parts": response_parts})
+        return contents
+
+
+class OpenAIIngestionClient(_HostedIngestionClient):
+    """Drive the ingestion loop with OpenAI tool calling."""
+
+    URL = "https://api.openai.com/v1/chat/completions"
+
+    async def next_tool_uses(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        model: str,
+    ) -> list[ToolUse]:
+        openai_tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": str(tool["name"]),
+                    "description": str(tool.get("description", "")),
+                    "parameters": _tool_parameters(dict(tool.get("input_schema") or {})),
+                },
+            }
+            for tool in tools
+        ]
+        payload = {
+            "model": self.model,
+            "messages": self._to_messages(messages),
+            "tools": openai_tools,
+            "tool_choice": "required",
+            "max_tokens": 1024,
+        }
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                self.URL, headers={"Authorization": f"Bearer {self.api_key}"}, json=payload
+            )
+            response.raise_for_status()
+            body = response.json()
+
+        import json as _json
+
+        tool_uses: list[ToolUse] = []
+        for choice in body.get("choices") or []:
+            for call in (choice.get("message") or {}).get("tool_calls") or []:
+                function = call.get("function") or {}
+                try:
+                    arguments = _json.loads(function.get("arguments") or "{}")
+                except ValueError:
+                    arguments = {}
+                tool_uses.append(
+                    self._record(
+                        ToolUse(
+                            id=self._next_id(),
+                            name=str(function.get("name")),
+                            input=dict(arguments),
+                        )
+                    )
+                )
+        return tool_uses
+
+    def _to_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        import json as _json
+
+        out: list[dict[str, Any]] = [{"role": "system", "content": _system_prompt()}]
+        for message in messages:
+            raw = message.get("content")
+            if isinstance(raw, str):
+                out.append({"role": "user", "content": raw})
+                continue
+            tool_calls: list[dict[str, Any]] = []
+            results: list[dict[str, Any]] = []
+            for block in raw if isinstance(raw, list) else []:
+                if not isinstance(block, dict) or block.get("type") != "tool_result":
+                    continue
+                tid = str(block.get("tool_use_id"))
+                emitted = self._emitted.get(tid, {"name": "detect_structure", "args": {}})
+                name = emitted["name"]
+                tool_calls.append(
+                    {
+                        "id": tid,
+                        "type": "function",
+                        "function": {"name": name, "arguments": _json.dumps(emitted.get("args") or {})},
+                    }
+                )
+                results.append(
+                    {"role": "tool", "tool_call_id": tid, "content": _json.dumps(_as_object(block.get("content")))}
+                )
+            if tool_calls:
+                out.append({"role": "assistant", "content": None, "tool_calls": tool_calls})
+                out.extend(results)
+        return out
+
+
+def _as_object(content: Any) -> dict[str, Any]:
+    """Function-response payloads must be JSON objects; wrap anything that is not."""
+    if isinstance(content, dict):
+        return content
+    return {"result": content}
+
+
+def default_ingestion_client() -> IngestionModelClient | None:
+    """Select an ingestion planner for whichever provider key is actually configured.
+
+    Ingestion planning is mechanical, so it routes through the cheapest available provider
+    (``Task.FAST``) rather than being pinned to one vendor. There is no hard requirement for
+    any specific key: with a real Anthropic, Gemini, or OpenAI key the matching planner is
+    used; with none configured the caller runs the deterministic local path. The planner only
+    orchestrates deterministic tools, so this choice never changes extraction quality — it
+    only decides whether an LLM sequences the page tools or the fallback does.
+    """
+    from app.core.model_router import Task, is_real_key, resolve
+
+    option = resolve(Task.FAST)
+    if option is None:
+        return None
+    key = os.getenv(option.key_name, "")
+    if not is_real_key(key):
+        return None
+    if option.provider == "anthropic":
+        return AnthropicMessagesClient()
+    if option.provider == "gemini":
+        return GeminiIngestionClient(key, option.model)
+    if option.provider == "openai":
+        return OpenAIIngestionClient(key, option.model)
+    return None
+
+
 class IngestionAgent:
     """Bounded tool-use loop for BC6 ingestion structure assessment."""
 
@@ -166,7 +435,9 @@ class IngestionAgent:
         self.db = db
         self.document = document
         self.pdf_path = resolve_document_pdf_path(document)
-        self.model_client = model_client or AnthropicMessagesClient()
+        # Fall back to the dynamic router selection only when a client was not injected. A
+        # test passing an explicit (possibly deterministic) client must keep it.
+        self.model_client = model_client if model_client is not None else default_ingestion_client()
         self.assessments: dict[int, PageAssessment] = {}
 
     async def run(self, page_count: int) -> IngestionRunResult:
@@ -178,7 +449,9 @@ class IngestionAgent:
                 "role": "user",
                 "content": (
                     f"Assess document {self.document.id} with {page_count} pages. "
-                    "Call only the provided tools until every page has structure data."
+                    "Call only the provided tools until every page has structure data. "
+                    "Request detect_structure for as many pages as possible in a single "
+                    "response so the whole document is assessed in as few turns as possible."
                 ),
             }
         ]
@@ -186,8 +459,22 @@ class IngestionAgent:
         iterations = 0
         fallback_reason: str | None = None
 
+        # The structure-assessment LLM loop is an optional optimization: every tool it can
+        # call (structure detection, OCR, page rasterization) also runs locally without any
+        # model. Only when NO provider key is configured at all is there nothing to drive the
+        # loop, so we skip it and go straight to the deterministic per-page path. This is a
+        # planned degradation, not a crash, so it is logged as one line rather than an
+        # exception stack trace that reads like a failure.
+        if self.model_client is None:
+            logger.info(
+                "ingestion_agent.deterministic_mode document_id=%s reason=no_provider_key "
+                "(structure assessed locally; no LLM required)",
+                self.document.id,
+            )
+            fallback_reason = "agent_llm_unconfigured"
+
         try:
-            while iterations < max_iterations:
+            while fallback_reason is None and iterations < max_iterations:
                 tool_uses = await self.model_client.next_tool_uses(
                     messages=messages,
                     tools=tools,
@@ -236,6 +523,33 @@ class IngestionAgent:
             )
             for page_number in fallback_pages:
                 self.assessments[page_number] = await self._fallback_assess_page(page_number)
+
+        # Guarantee that every page assessed as bearing a table or figure has a persisted
+        # image. An LLM planner may call detect_structure without the follow-up
+        # flag_table_pages, and the missing-page fallback above only covers pages with no
+        # assessment at all — so without this sweep an agent-planned run could silently drop
+        # table images that the deterministic path always keeps. This is idempotent: pages
+        # that already have an image are skipped, so nothing is rasterized twice.
+        existing_images = set(
+            (
+                await self.db.execute(
+                    select(PageImage.page_number).where(PageImage.document_id == self.document.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        for page_number, assessment in self.assessments.items():
+            if (assessment.has_table or assessment.has_figure) and page_number not in existing_images:
+                try:
+                    await _persist_page_image(self.db, self.document, self.pdf_path, assessment)
+                except Exception as exc:
+                    logger.warning(
+                        "ingestion_agent.image_guarantee_failed document_id=%s page=%s error=%s",
+                        self.document.id,
+                        page_number,
+                        exc,
+                    )
 
         ordered = [self.assessments[page_number] for page_number in range(1, page_count + 1)]
         return IngestionRunResult(

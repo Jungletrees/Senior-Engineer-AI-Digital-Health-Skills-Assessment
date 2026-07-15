@@ -29,6 +29,13 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     embedding_model: str = "text-embedding-3-small"
     embedding_dim: int = 1536
+    # `batchEmbedContents` counts each item in the batch as one request against the
+    # provider's per-minute quota. Gemini's free tier allows ~100 requests/minute, so a
+    # batch of 100 exhausts the whole minute in a single call and 429s. Keep the batch well
+    # under the ceiling and pace batches so the average stays below `embedding_requests_per_minute`.
+    # A paid tier can raise the batch and set the RPM budget to 0 to disable pacing.
+    embedding_batch_limit: int = 40
+    embedding_requests_per_minute: int = 70
     retrieval_top_k: int = 20
     hybrid_search_enabled: bool = True
     rrf_k: int = 60

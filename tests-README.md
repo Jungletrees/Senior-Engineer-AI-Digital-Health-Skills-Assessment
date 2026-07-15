@@ -18,10 +18,18 @@ All results below are from the chat-UI/response-presentation buildrun on branch 
 
 | Tier | Status | Command and last result |
 |---|---|---|
-| Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> **`161 passed, 12 skipped, 4 warnings in 62.95s`** |
+| Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> **`220 passed, 12 skipped, 4 warnings`** |
 | Backend RAG system integration suite | Verified complete (new) | `docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py -vv` -> **`17 passed`** |
+| Model router + provider selection | Verified complete (new) | `pytest app/tests/test_model_router.py app/tests/test_generation_provider.py` -> **`12 + 12 passed`**: cheapest-configured-provider routing, placeholder-key rejection, Gemini/OpenAI/Anthropic request shapes, honest degradation |
+| Judge provider routing | Verified complete (new) | `pytest app/tests/test_judge_reproducibility.py` -> **`5 passed`**: judge pinned to Anthropic Opus, Gemini/OpenAI fallback clients, deterministic fallback, reasoning-part filtering |
+| Dynamic chunking strategy | Verified complete (new) | `pytest app/tests/test_chunk_strategy.py` -> **`9 passed`**: table forces structure-aware, hierarchy vs. flat scan, fixed-size overlap, decision recorded to metadata |
+| Embedding reuse / cross-session dedup | Verified complete (new) | `pytest app/tests/test_embedding_reuse.py` -> **`5 passed`**: identical text embedded once across documents/sessions, scoped by embedding model |
+| Decision-level audit trail | Verified complete (new) | `pytest app/tests/test_audit_trail.py` -> **`3 passed`**: one question replays router + retrieval score from one key; a failed trace write never poisons the caller's transaction |
+| Provider rate-limit retry | Verified complete (new) | `pytest app/tests/test_gemini_retry.py` -> **`5 passed`**: a transient 429/5xx is retried with backoff and recovers; a persistent 429 eventually raises; a real 400 is never retried; the `Retry-After` header is honored. Guards the free-tier rate-limit failure that stalled corpus ingestion. |
+| Dynamic ingestion-agent routing | Verified complete (new) | `pytest app/tests/test_ingestion_routing.py` -> **`7 passed`**: the ingestion planner requires no specific vendor key, routes to the cheapest available provider (`Task.FAST`), falls back to the deterministic local path when no key is configured, rejects placeholder keys, and reconstructs the Gemini 3 model turn (thought signature + call id) so multi-turn planning does not 400. |
+| Semantic cache model scoping | Verified complete | `pytest app/tests/test_cache.py` -> vectors never compared across embedding models; a missing model label now fails loudly (migration 0016) |
 | Backend response presenter | Verified complete (new) | `docker compose -p assessment exec backend pytest app/tests/test_response_presenter.py -vv` -> **`19 passed`** |
-| Frontend deterministic suite | Verified complete | `npm test --prefix frontend -- --runInBand` -> **`21 passed`** |
+| Frontend deterministic suite | Verified complete | `npm test --prefix frontend` -> **`23 passed`** |
 | Chainlit client tests | Verified complete | `python3 -m unittest chainlit_app.tests.test_chat -v` -> **`10 passed`** |
 | Playwright chat-UI e2e | Verified complete (new) | `npx playwright test e2e/chat-ui.spec.ts` -> **`16 passed`** in real Chromium, covering both chat surfaces at 375/768/1024/1440 px |
 | Playwright upload-to-citation e2e | Scaffolded, not run in this pass | `frontend/e2e/upload-chainlit-citation.spec.ts` needs a live stack with a real ingestion round trip |
@@ -242,7 +250,7 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC10/BC14 Orchestrator Tests:** `backend/app/tests/test_orchestrator.py` verifies lexical-overlap compaction, document-order restoration, zero-overlap fallback, static import-boundary enforcement, multimodal image attachment, text-only degradation, context-block payload assembly, retrieval failure propagation, and removal of the BC10 output-filter stub after BC14. Tests inject fake retrieval-agent instances and do not call retrieval internals directly.
 - **BC11 Cache Tests:** `backend/app/tests/test_cache.py` verifies query normalization/hash equivalence, exact-cache retrieval/generation skip behavior, semantic threshold hit/miss behavior, hit-count/last-used updates, exact TTL expiry, semantic LRU eviction, document-deletion invalidation, prompt-cache control toggling, and write-eligibility false skips. Semantic-cache tests inject deterministic embedding clients and never call hosted embedding APIs.
 - **BC12 Chat Tests:** `backend/app/tests/test_chat.py` verifies idempotency duplicate handling, concurrent duplicate suppression, conversation-summary threshold behavior, latest-summary-only context loading, exact/semantic cache hits skipping RetrievalAgent and generation, empty-corpus upload-first behavior, retrieval-unavailable responses, audit finalization, source chunk persistence, and structured citation metadata. Tests inject fake generation clients, fake RetrievalAgent instances, fake embedding clients, and no-op Chainlit step wrappers.
-- **BC13 Frontend/Upload Config Tests:** `backend/app/tests/test_upload_config.py` verifies the settings-derived upload-limits endpoint. `npm test --prefix frontend -- --runInBand` runs deterministic Node tests for the `/documents` page source, frontend fetch/XHR helpers, upload validation, upload progress, mocked polling transitions, failed status rendering support, optimistic delete, rollback, and public/no-auth document calls.
+- **BC13 Frontend/Upload Config Tests:** `backend/app/tests/test_upload_config.py` verifies the settings-derived upload-limits endpoint. `npm test --prefix frontend` runs deterministic Node tests for the `/documents` page source, frontend fetch/XHR helpers, upload validation, upload progress, mocked polling transitions, failed status rendering support, optimistic delete, rollback, and public/no-auth document calls.
 - **BC14 Guardrail Tests:** `backend/app/tests/test_guardrails.py` verifies grounded/fabricated answers, leak canaries, PII provenance, empty-answer filtering, tool-result sanitizer delimiter defense, filtered-response cache blocking, input-validation audit rejection, security headers, and configured CORS. No hosted LLMs, hosted embeddings, hosted auth providers, or reranker downloads are used.
 - **BC15 Auth/Rate-Limit Tests:** `backend/app/tests/test_auth.py` and `backend/app/tests/test_rate_limit.py` verify JWT issuance/verification, explicit public document-route access for the local reviewer stack, anonymous-chat flag behavior, per-session limits, per-IP limits via `query_audit_log.client_ip`, `Retry-After`, and rate-limit-before-cache behavior. Rate-limit tests use DB fixtures rather than external counters.
 - **BC21-BC28 Corrective Tests:** Scheduler singleton tests verify Postgres advisory-lock execution and lock release. Cost/index/cache tests cover `MODEL_PRICING_JSON`, rate-limit indexes, and semantic-cache `embedding_model` scoping/drift cleanup. Numeric grounding tests enforce exact clinical numeric output matching, including 5 ml pass / 15 ml fail and tolerance ignored for generated answers. Anomaly/Judge/Gold tests cover cadence split, reproducible `JudgeAgent` metadata, SQLAlchemy-backed gold eval persistence, verified-question skipping, and rubric/deviation math. Deterministic tests inject fake chat and fake judge clients and never call hosted LLMs.
@@ -253,13 +261,13 @@ Chat-UI and response-presentation buildrun (branch `codex/chat-ui-requirement-po
 
 ```text
 docker compose -p assessment exec backend pytest
-161 passed, 12 skipped, 4 warnings in 62.95s
+220 passed, 12 skipped, 4 warnings
 
 docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py -q
 17 passed in 21.50s
 
-npm test --prefix frontend -- --runInBand
-21 passed
+npm test --prefix frontend
+23 passed
 
 python3 -m unittest chainlit_app.tests.test_chat
 10 passed
@@ -304,7 +312,7 @@ Historical BC12-BC15 image-build issue, now superseded by the BC21-BC28 rebuild:
 python3 -m compileall backend/app
 passed
 
-npm test --prefix frontend -- --runInBand
+npm test --prefix frontend
 1..1
 # tests 1
 # pass 1
@@ -343,7 +351,7 @@ docker compose -p assessment exec backend pytest -m golden_set -vv
 docker compose -p assessment exec backend pytest
 120 passed, 12 skipped, 4 warnings in 41.03s
 
-npm test --prefix frontend -- --runInBand
+npm test --prefix frontend
 1 passed
 
 docker compose -p assessment exec backend python -c "import urllib.request; print(urllib.request.urlopen('http://localhost:6100/health', timeout=5).read().decode())"
@@ -370,14 +378,14 @@ To run deterministic frontend tests:
 
 *   **Using npm commands from the project root:**
     ```sh
-    npm test --prefix frontend -- --runInBand
+    npm test --prefix frontend
     ```
 
 *   **Running directly from the frontend directory:**
     ```sh
     cd frontend
     npm install
-    npm test -- --runInBand
+    npm test
     ```
 
 ---

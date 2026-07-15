@@ -94,14 +94,14 @@ class GeminiGenerationClient:
         return _first_text(data) or " ".join(transcript.split()[:max_tokens])
 
     async def _post(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        # Reuse the embedding client's retry: Gemini's free tier rate-limits generation the
+        # same way, and a 429 during the gold eval must back off, not fail the answer.
+        from app.documents.chunking import _gemini_post_with_retry
+
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            response = await client.post(
-                f"{BASE_URL}/models/{path}",
-                headers={"x-goog-api-key": self._api_key},
-                json=body,
+            return await _gemini_post_with_retry(
+                client, f"{BASE_URL}/models/{path}", self._api_key, body
             )
-            response.raise_for_status()
-            return response.json()
 
 
 def _system_text(payload: GenerationPayload) -> str:

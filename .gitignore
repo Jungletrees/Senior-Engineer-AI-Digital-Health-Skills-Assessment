@@ -69,6 +69,11 @@ gold_standard/gold_eval_report.md
 *.dump
 *.sql.gz
 
+
+# WSL/Windows and Office scratch artifacts that should never enter the repo.
+*:Zone.Identifier
+~$*
+
 # vercel
 .vercel
 

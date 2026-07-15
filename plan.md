@@ -1,6 +1,47 @@
 # Development Build Plan (plan.md)
 
-## Current Status: [x] Chat UI Requirement & Response Presentation — Complete
+## Current Status: [~] Multi-Provider Routing, Dynamic Chunking, Observability — In Progress
+
+### Active Cycle: Provider routing, chunking, dedup, audit trail, gold eval
+
+**Objective:** make the RAG pipeline use whichever configured API key best fits each
+agentic task (cost-optimized), pin the judge to Anthropic Opus, choose chunking strategy
+per document, dedup embeddings across sessions, and give every decision an end-to-end audit
+trail — then run the gold-standard evaluation against a real corpus.
+
+**Completed and verified (backend suite: 208 passed, 12 skipped):**
+- [x] `core/model_router.py`: cheapest configured provider per task; provider derived from
+  model name + real keys; `MODEL_ROUTING=auto|manual`.
+- [x] Three generation clients (Anthropic, OpenAI, Gemini) + three embedding providers
+  behind one protocol each. Gemini embeddings use Matryoshka truncation to 1536 dims to
+  fit the fixed-width pgvector column without a migration.
+- [x] JudgeAgent pinned to Anthropic Opus; Gemini/OpenAI/deterministic fallbacks each
+  logged; run metadata records the actual judge.
+- [x] Honest degradation: `/chat` `model_status` + a plain-language notice in both chat
+  UIs + an `agent_trace_log` row.
+- [x] Dynamic chunking (`documents/chunk_strategy.py`): structure-aware when a table or a
+  navigable hierarchy exists, fixed-size + 15% overlap otherwise; decision persisted.
+- [x] Embedding reuse: identical chunk text embedded once across documents/sessions,
+  scoped by `embedding_model`.
+- [x] Decision-level audit trail (migration 0015): router choice + reason, retrieval mode +
+  reranker score, chunking strategy, all under one `query_audit_log_id`.
+- [x] Bugs found by real ingestion: Gemini `batchEmbedContents` 100-item cap; Gemini 3
+  `thought` parts leaking into answers/scores; a best-effort trace write poisoning the
+  caller's transaction on a deadlock (fixed with a SAVEPOINT); `semantic_cache` model
+  default masking cross-model comparison (migration 0016).
+- [x] Scheduler singleton verified: five jobs, distinct advisory-lock ids, `gold_eval` on
+  `0 3 * * *`; lock released on crash.
+
+**Pending:**
+- [ ] Gold-standard eval run against the indexed corpus (Gemini generation + judge locally;
+  Opus judge in production). Score is honest-labeled by the judge that produced it.
+- [ ] End-to-end proofs against the real corpus (per-doc strategy, embedding reuse,
+  audit-chain replay, semantic search with no lexical overlap, degraded-mode notice).
+- [ ] Clean-clone run.
+
+---
+
+## Prior Cycle: Chat UI Requirement & Response Presentation — Complete
 **Active Build Cycle:** Chat UI Requirement Audit and Response Presentation (branch `codex/chat-ui-requirement-polish`)
 
 ---

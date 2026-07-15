@@ -10,7 +10,7 @@ Answers are grounded in the uploaded documents and carry Chicago-style superscri
 
 | Workstream | Status | Evidence / reviewer note |
 |---|---|---|
-| Backend deterministic suite | Verified complete | Full backend run: `161 passed, 12 skipped, 4 warnings in 62.95s`. |
+| Backend deterministic suite | Verified complete | Full backend run: `220 passed, 12 skipped, 4 warnings`. |
 | FastAPI health/docs | Complete | `/health` returns `{"status":"ok","database":"ok"}` in the last smoke test; OpenAPI is available at `/docs`. |
 | Documents API validation/storage | Complete for local public route contract | Upload validation, storage, dedup, list, poll, delete, and background worker enqueueing are implemented without IAM/JWT gating; deterministic route tests assert public access plus worker scheduling for new uploads and no reschedule for indexed duplicates. |
 | Ingestion worker | Verified complete in deterministic tests | Worker path indexes a `processing` document, persists chunks/page images, and marks it `indexed` under fake clients. |
@@ -164,14 +164,14 @@ curl -I http://localhost:3000/documents
 curl -I http://localhost:8000
 ```
 
-Last known green verification from the verified branch state:
+Last known green verification:
 
 ```text
 docker compose -p assessment exec backend pytest
-161 passed, 12 skipped, 4 warnings in 62.95s
+220 passed, 12 skipped, 4 warnings
 
-npm test --prefix frontend -- --runInBand
-21 passed
+npm test --prefix frontend
+23 passed
 
 python3 -m unittest chainlit_app.tests.test_chat
 10 passed
@@ -187,7 +187,7 @@ Run the deterministic suites:
 
 ```sh
 docker compose -p assessment exec backend pytest
-npm test --prefix frontend -- --runInBand
+npm test --prefix frontend
 ```
 
 Run Playwright smoke after the stack is rebuilt and Playwright browser binaries are installed:
@@ -244,12 +244,21 @@ Each agent in the pipeline chooses its provider from the cheapest **configured**
 | Answer generation (`/chat`) | `GEMINI` → `OPENAI` → `ANTHROPIC` | `gemini-3.1-flash-lite` | Cheapest capable model; answer quality is the product |
 | Embeddings (semantic search) | `GEMINI` → `OPENAI` → `VOYAGE` | `gemini-embedding-001` (1536-dim) | Must match `EMBEDDING_DIM`; changing it is a re-index |
 | Fast/mechanical (summaries, query expansion, planning) | `GEMINI` → `OPENAI` → `ANTHROPIC` | `gemini-3.1-flash-lite` | Cheapest small model; paying Opus rates here is waste |
-| Ingestion planning (ingestion agent) | `ANTHROPIC`, else deterministic | agent loop | Structure/OCR judgement; falls back to a deterministic per-page path with no key |
+| Ingestion planning (ingestion agent) | `GEMINI` → `OPENAI` → `ANTHROPIC`, else deterministic | cheapest suited (`gemini-3.1-flash-lite`) | Sequences the page-structure tools. Requires no specific vendor key: routes to the cheapest available provider, and with no key runs the identical deterministic per-page path — the tools are local, so the choice never changes extraction quality |
 | **JudgeAgent (grading, gold eval)** | **`ANTHROPIC` only** | **`claude-opus-4-8`** | **Pinned, not cost-routed.** A non-Opus judge is logged and its scores are marked not comparable to an Opus-judged baseline |
 
 `MODEL_ROUTING=auto` (default) picks the cheapest suited provider per task; `MODEL_ROUTING=manual` honors the pinned `GENERATION_MODEL_PRIMARY`/`_FAST`. The provider is derived from the model name plus which keys are real (`gemini-*` → `GEMINI_API_KEY`, `claude-*` → `ANTHROPIC_API_KEY`, `gpt-*`/`text-embedding-*` → `OPENAI_API_KEY`, `voyage-*` → `VOYAGE_API_KEY`).
 
 **With no key**, the system degrades and says so (a `model_status` notice in both chat UIs, plus an audit-log row). A reviewer judging answer quality needs at least a generation key and an embedding key; a gold-eval score needs an Anthropic key for the pinned Opus judge, or its metadata records that a fallback judge scored it. Full per-key detail is in `.env.example`.
+
+#### Provider rate limits and the free-tier embedding cap (read before ingesting a large PDF)
+
+Hosted providers rate-limit requests, and ingestion is embedding-heavy: a multi-hundred-page PDF produces hundreds of chunks, each an embedding request. The backend handles this in two layers, both env-tunable:
+
+- **Retry with backoff.** A transient `429`/`5xx` from Gemini is retried with exponential backoff up to ~2 minutes (`_gemini_post_with_retry`), honoring any `Retry-After`. A real `4xx` (e.g. a malformed request) is never retried. Covered by `test_gemini_retry.py`.
+- **Batch + pacing.** `batchEmbedContents` counts each item in the batch as one request against the per-minute quota, so a batch at the API ceiling (100) exhausts a whole minute in one call. The batch is capped (`EMBEDDING_BATCH_LIMIT=40`) and batches are paced to stay under `EMBEDDING_REQUESTS_PER_MINUTE=70`. Raise both — or set the RPM to `0` to disable pacing — on a paid tier.
+
+**The hard limit is the free-tier _daily_ embedding quota, not the per-minute one.** Gemini's free tier for `gemini-embedding-001` enforces `EmbedContentRequestsPerDayPerUserPerProjectPerModel`, a low per-day cap that is **per Google Cloud project** (rotating to another key on the same project does not reset it). When it is exhausted, every embedding request returns `429` regardless of backoff, and the document ends in `failed` — this is an account quota, not a code fault. To ingest the full corpus on a free tier, use a key from a **fresh project** (fresh daily quota), enable billing to lift the cap, or wait for the daily reset. Generation and embedding quotas are separate buckets, so chat can keep working even when embedding is capped. If you only need to see the pipeline run end-to-end without a key, unset the embedding key and the system indexes with the offline hash-based embedder and shows the "limited search" notice.
 
 ### API keys — security posture
 
@@ -259,7 +268,7 @@ Provider keys are the highest-value secret here — they are spendable. Full pos
 - **No key may be prefixed `NEXT_PUBLIC_`.** Next.js inlines those into the client bundle at build time, publishing them to every visitor. That would be an incident, not a bug.
 - Keys are read from the environment only. They are never written to the database, never returned by any route, and never logged — provider-selection logs name the *variable*, never the value (`generation.provider_key_missing key=ANTHROPIC_API_KEY fallback=deterministic`).
 - **Placeholders degrade safely.** `your-anthropic-api-key-here` is detected as *absent*, so an unedited `.env` falls back to the local path instead of 401-ing on every chat turn.
-- **A missing key degrades; it never crashes.** Without `ANTHROPIC_API_KEY` answers come from a local extractive fallback; without `OPENAI_API_KEY` embeddings are a hash-based fallback and **semantic search is effectively off**. Both are documented in `.env.example`, because a reviewer judging answer quality needs to know which path they are on.
+- **A missing key degrades; it never crashes.** With no generation key configured, answers come from a local extractive fallback; with no embedding key (`GEMINI`/`OPENAI`/`VOYAGE`) embeddings are a hash-based fallback and **semantic search is effectively off**. Both are documented in `.env.example`, because a reviewer judging answer quality needs to know which path they are on.
 - In production, keys come from Secrets Manager/SSM injected at task start — never baked into an image, never a committed `.env` — with per-environment keys, scheduled rotation, a provider-side spend cap, and CI secret scanning.
 
 ### Everything else

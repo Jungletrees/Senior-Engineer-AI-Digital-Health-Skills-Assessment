@@ -85,6 +85,10 @@ async def test_rasterization_and_struct_detection(monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr("app.documents.processing.pdfplumber.open", lambda *_args, **_kwargs: FakePdf())
     monkeypatch.setattr("app.documents.chunking.pdfplumber.open", lambda *_args, **_kwargs: FakePdf())
     monkeypatch.setattr("app.documents.processing.convert_from_path", lambda *_args, **_kwargs: [FakeImage()])
+    # This is a hermetic test of the worker's deterministic rasterization path. Force the
+    # deterministic planner so it never reaches for a real provider key that happens to be
+    # present in the container environment.
+    monkeypatch.setattr("app.agents.ingestion_agent.default_ingestion_client", lambda: None)
 
     async with async_test_session_factory() as db:
         doc = Document(

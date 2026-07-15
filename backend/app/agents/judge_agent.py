@@ -99,21 +99,22 @@ class GeminiJudgeModelClient:
         self.temperature = temperature
 
     async def score(self, criterion: str, question: dict[str, Any], answer: str, rubric: dict[str, Any]) -> float:
+        from app.documents.chunking import _gemini_post_with_retry
+
         prompt = _judge_prompt(criterion, question, answer, rubric)
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.post(
+            # The gold eval issues many judge calls in a row; a 429 must back off, not fail
+            # the score with a non-numeric error.
+            body = await _gemini_post_with_retry(
+                client,
                 f"{self.BASE_URL}/models/{self.model}:generateContent",
-                headers={"x-goog-api-key": self.api_key},
-                json={
+                self.api_key,
+                {
                     "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": self.temperature,
-                        "maxOutputTokens": 16,
-                    },
+                    "generationConfig": {"temperature": self.temperature, "maxOutputTokens": 16},
                 },
             )
-            response.raise_for_status()
-        text = _extract_gemini_text(response.json())
+        text = _extract_gemini_text(body)
         try:
             return max(0.0, min(1.0, float(text.strip())))
         except ValueError as exc:
