@@ -157,18 +157,21 @@ class ModelStatus:
 # Plain language on purpose: this is shown in the chat window to someone who does not know
 # what an embedding or a language model is, only that the answer might be worse than usual.
 NO_MODEL_NOTICE = (
-    "No AI model is set up right now, so this answer was put together by pulling sentences "
-    "straight out of your documents instead of being written for you. It may miss the point "
-    "of your question. Add a model key to get full answers."
+    "Degraded mode: no AI model is configured, so this answer was assembled by pulling "
+    "sentences straight out of your documents instead of being written for you, and may be "
+    "inaccurate or miss the point of your question. Ask the developer/administrator to set up "
+    "an AI model API key for accurate answers."
 )
 NO_SEARCH_NOTICE = (
-    "Document search is limited right now, so I may miss a relevant passage unless your "
-    "wording closely matches the document."
+    "Degraded mode: document search is running without an embedding model, so it can only "
+    "match close wording and may miss a relevant passage. Answers may be less accurate. Ask "
+    "the developer/administrator to set up an embedding API key for accurate search."
 )
 BOTH_NOTICE = (
-    "No AI model is set up right now. This answer was put together by pulling sentences "
-    "straight out of your documents, and document search is limited to close wording "
-    "matches. Add a model key to get full answers."
+    "Degraded mode: no AI model or search model is configured. This answer was assembled by "
+    "pulling sentences straight out of your documents, search is limited to close wording "
+    "matches, and results may be inaccurate. Ask the developer/administrator to set up the "
+    "AI model API key(s) for accurate answers."
 )
 
 
