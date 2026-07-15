@@ -77,6 +77,8 @@ def _fact_present(fact: str, answer_norm: str, synonyms: dict) -> bool:
 # ---------- refusal detection (deterministic) ----------
 
 _REFUSAL_MARKERS = [
+    # The system's canonical no-answer strings (backend NO_ANSWER_MESSAGE / NO_ANSWER_ANSWER).
+    "could not find", "couldn't find", "in your documents", "in the uploaded documents",
     "not in the provided documents", "not covered", "cannot answer", "can't answer",
     "outside", "refer", "consult", "i don't have", "no information", "not able to",
     "wasn't able to verify", "unable to",
@@ -111,6 +113,19 @@ def _score_numeric_accuracy(q: dict, answer: str, source_texts: list[str], rubri
 
 
 def _score_grounding(q: dict, cited_docs: list[str], cited_pages: list[int]) -> float:
+    # A synthesis question draws on more than one document. `source_docs` (a list) scores
+    # grounding by how many of the expected documents the answer actually cited: full credit
+    # only when every source is cited, half credit for a partial synthesis, zero for none.
+    # This rewards an answer that genuinely combines the corpus over one that leans on a
+    # single document.
+    expected_docs = q.get("source_docs")
+    if expected_docs:
+        cited = set(cited_docs or [])
+        hit = sum(1 for doc in expected_docs if doc in cited)
+        if hit == 0:
+            return 0.0
+        return 1.0 if hit == len(expected_docs) else 0.5
+
     expected_doc = q.get("source_doc")
     if expected_doc is None:
         # refusal question: correct grounding == cited nothing

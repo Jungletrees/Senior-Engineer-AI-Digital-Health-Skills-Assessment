@@ -60,12 +60,21 @@ class ChatClient:
                 lineage = await self._fetch_lineage(db, UUID(session_id), body)
         else:
             lineage = await self._fetch_lineage(self.db, UUID(session_id), body)
-        cited_docs = [self._filename_to_corpus_id.get(filename, filename) for filename in lineage["filenames"]]
+        # Grounding must be measured against what the answer actually CITED, not everything
+        # retrieval happened to fetch. A refusal retrieves chunks (top-k always returns
+        # something) but cites none; scoring it on retrieved chunks would wrongly read as
+        # "cited a document" and fail every correct decline. The `citations` array is the
+        # cited set; `source_texts` stays the retrieved text (used only for the numeric
+        # fabrication check, where more context is a safe over-approximation).
+        citations = body.get("citations") or []
+        cited_filenames = [str(c.get("document_filename")) for c in citations if c.get("document_filename")]
+        cited_docs = [self._filename_to_corpus_id.get(fn, fn) for fn in cited_filenames]
+        cited_pages = [int(c["page_number"]) for c in citations if c.get("page_number") is not None]
         return ChatResult(
             answer=_parse_answer(body),
-            cited_doc_ids=lineage["doc_ids"],
+            cited_doc_ids=[str(c.get("document_id")) for c in citations if c.get("document_id")],
             cited_docs=[doc for doc in cited_docs if doc],
-            cited_pages=lineage["pages"],
+            cited_pages=cited_pages,
             source_texts=lineage["texts"],
             query_audit_log_id=lineage["qal_id"],
             raw=body,

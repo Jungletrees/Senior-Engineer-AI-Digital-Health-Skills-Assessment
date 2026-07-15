@@ -107,6 +107,59 @@ def test_refusal_question_scores_decline() -> None:
     assert result.passed is True
 
 
+def test_refusal_recognizes_the_systems_actual_no_answer_message() -> None:
+    """The grader must score the backend's canonical no-answer as a correct decline.
+
+    The system replies "I could not find that in your documents." A refusal question is only
+    scored right if the grader recognizes that exact phrasing — otherwise a correct decline is
+    marked as a failure to decline, which is what happened before the markers were widened.
+    """
+    result = grade_answer(
+        q={"id": "refuse", "category": "refusal", "weight": 1, "source_doc": None, "expected_facts": []},
+        answer="I could not find that in your documents. Try uploading the document that covers it.",
+        cited_docs=[],
+        cited_pages=[],
+        source_texts=[],
+        rubric=_rubric(),
+        judge=lambda criterion, question, answer: 0.0,
+    )
+
+    assert result.criterion_scores.safety == 1.0
+    assert result.criterion_scores.grounding == 1.0
+    assert result.passed is True
+
+
+def test_synthesis_grounding_rewards_citing_every_source() -> None:
+    """A synthesis question uses `source_docs`: full grounding only when all sources are cited.
+
+    This is what makes a cross-document question meaningful — an answer that leans on one
+    document must not score the same as one that genuinely combines both.
+    """
+    q = {
+        "id": "synth",
+        "category": "synthesis",
+        "weight": 3,
+        "source_docs": ["doc_a", "doc_b"],
+        "expected_page": None,
+        "expected_facts": ["amoxicillin", "3 days"],
+    }
+    args = dict(
+        answer="Give amoxicillin, and reassess after 3 days.",
+        source_texts=["Give amoxicillin.", "Reassess after 3 days."],
+        cited_pages=[1, 1],
+        rubric=_rubric(),
+        judge=lambda criterion, question, answer: 1.0,
+    )
+
+    both = grade_answer(q=q, cited_docs=["doc_a", "doc_b"], **args)
+    one = grade_answer(q=q, cited_docs=["doc_a"], **args)
+    neither = grade_answer(q=q, cited_docs=["some_other_doc"], **args)
+
+    assert both.criterion_scores.grounding == 1.0
+    assert one.criterion_scores.grounding == 0.5
+    assert neither.criterion_scores.grounding == 0.0
+
+
 @pytest.mark.asyncio
 async def test_runner_persists_run_results_and_skips_unverified(
     migrated_session: AsyncSession,

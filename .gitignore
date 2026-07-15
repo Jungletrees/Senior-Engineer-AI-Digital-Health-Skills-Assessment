@@ -62,7 +62,6 @@ data/
 uploads/
 page_images/
 gold_standard/corpus/files/
-gold_standard/gold_eval_report.md
 
 # Local database dump files
 *.sql

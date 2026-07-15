@@ -10,7 +10,7 @@ Answers are grounded in the uploaded documents and carry Chicago-style superscri
 
 | Workstream | Status | Evidence / reviewer note |
 |---|---|---|
-| Backend deterministic suite | Verified complete | Full backend run: `220 passed, 12 skipped, 4 warnings`. |
+| Backend deterministic suite | Verified complete | Full backend run: `224 passed, 12 skipped, 4 warnings`. |
 | FastAPI health/docs | Complete | `/health` returns `{"status":"ok","database":"ok"}` in the last smoke test; OpenAPI is available at `/docs`. |
 | Documents API validation/storage | Complete for local public route contract | Upload validation, storage, dedup, list, poll, delete, and background worker enqueueing are implemented without IAM/JWT gating; deterministic route tests assert public access plus worker scheduling for new uploads and no reschedule for indexed duplicates. |
 | Ingestion worker | Verified complete in deterministic tests | Worker path indexes a `processing` document, persists chunks/page images, and marks it `indexed` under fake clients. |
@@ -21,9 +21,29 @@ Answers are grounded in the uploaded documents and carry Chicago-style superscri
 | RAG system integration | Verified complete | 17 tests over a real multi-document pgvector corpus covering synthesis, caching, cost, prompt injection, rate limits, compaction, and the sliding context window. |
 | Frontend `/documents` UI | Verified complete | Upload, progress, polling, friendly status labels, optimistic delete with rollback. |
 | Playwright e2e | Verified complete for the chat UI | `e2e/chat-ui.spec.ts` -> 16 passed in real Chromium. The upload-to-cited-answer spec still needs a live ingestion round trip. |
-| Gold-standard workflow | Implemented, not yet trusted with real scores | Runner, persistence, rubric, reports, and deterministic tests exist; real scores require corpus fetch, checksum pinning, indexing, and human expected-answer verification. |
+| Gold-standard workflow | Runs end-to-end on the compact corpus | A deterministic, generated 4-PDF corpus (table / hierarchy / prose / scanned-OCR) indexes and the eval scores **91.12/100** over 8 questions (table, semantic, hierarchy, OCR, cross-doc synthesis, refusal). The judge is the honest Gemini fallback, not the pinned Opus, so the number is not an Opus-comparable floor. The real ~659-page WHO corpus needs a paid/fresh-project embedding key. |
 | Clean-clone validation | Not complete | A clean clone has not been run for this checklist pass. |
 | AWS deployment | Planned | AWS architecture, Lambda/Bedrock rationale, security, and CI/CD plan are documented; no live deployment or IaC exists. |
+
+## Documentation Map
+
+Where to find each piece of documentation, for quick navigation.
+
+| Topic | Document | What's in it |
+|---|---|---|
+| **Start here** | [`README.md`](./README.md) (this file) | Overview, architecture summary, local run, testing, deployment plan, security/scalability, assumptions |
+| Local run & environment | [`local-setup.md`](./local-setup.md) | Step-by-step setup and the environment/portability risks (disk, RAM, ports, arch, the pytest schema-drop) |
+| Architecture & decisions | [`build-plans-architecture/ARCHITECTURE (4).md`](<./build-plans-architecture/ARCHITECTURE (4).md>) | Full ingestion→retrieval→generation walkthrough, the decision log, and the complete assumptions list (§21) |
+| Production deployment | [`DEPLOYMENT.md`](./DEPLOYMENT.md) | Cloud-provider choice + rationale, CI/CD strategy, infrastructure, secrets management, observability, DR, cost |
+| Testing — how & results | [`tests-README.md`](./tests-README.md) | Every test suite, exact commands, and last results (backend, frontend, Chainlit, Playwright, gold eval) |
+| Gold-standard evaluation | [`gold_standard/README.md`](./gold_standard/README.md) | The deterministic multi-type corpus, the questions, how to run the eval, and the honest score caveats |
+| Latest gold-eval report | [`gold_standard/gold_eval_report.md`](./gold_standard/gold_eval_report.md) | Committed report from the most recent run (overall + per-question) |
+| Configuration & API keys | [`.env.example`](./.env.example) | Every backend/DB/provider variable, plus the API-key-by-agentic-task map and secrets posture |
+| Frontend config | [`frontend/.env.local.example`](./frontend/.env.local.example) · [`frontend/README.md`](./frontend/README.md) | The single browser-facing base-URL var; frontend notes |
+| Chainlit surface | [`chainlit_app/chainlit.md`](./chainlit_app/chainlit.md) | The plain-language Chainlit welcome page |
+| Agent orchestration | [`agents.md`](./agents.md) | The multi-agent mesh, coordination, and development guidelines |
+| Submission checklist audit | [`build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md`](./build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md) | Per-item pass/partial/not-done status against the assessment checklist |
+| Build plans & handoffs | [`build-plans-architecture/`](./build-plans-architecture/) | The incremental build plans (BC-series) and engineering handoff prompts |
 
 ## Assumptions
 
@@ -54,7 +74,14 @@ The brief invites noting assumptions rather than leaving them implicit. These ar
 - **~10 GB free disk, 4 GB free RAM, and network for the first build.** Images total ~5.7 GB (backend is 2.92 GB, dominated by torch); a measured cold `--no-cache` backend build took **20m 01s**. Runtime memory is small (~450 MB across all containers). No GPU is used.
 - **Ports 3000, 5432, 6100, 8000 must be free.** 5432 is the realistic collision, with a developer's own PostgreSQL.
 - **x86_64 and arm64 are both supported, but only x86_64 has been executed.** `torch==2.9.1+cpu` exists only for x86_64, so the pin is now architecture-conditional; the arm64 path is a reasoned fix, not a verified one.
-- **Running `pytest` wipes the database.** The fixtures migrate down to base against the same database the running stack uses, so the test suite deletes any documents you uploaded.
+- **Running `pytest` drops the database schema.** The test fixtures run Alembic **down to `base`** against the same database the running stack uses and then back up, and the final teardown leaves it downgraded — so after a test run **every table is dropped** (all uploaded documents, chunks, caches, and audit rows are gone, and `/chat`/uploads will error with `relation "documents" does not exist`). This is by design for test isolation, but it means you must **restore the schema before using the app again**:
+
+  ```sh
+  docker compose -p assessment exec backend alembic upgrade head
+  docker compose -p assessment restart backend   # clears asyncpg prepared-statement caches
+  ```
+
+  The restart matters: recreating the schema under a running backend leaves its asyncpg connection pool holding prepared statements bound to the dropped tables, and the next ingestion fails with `InvalidCachedStatementError` until the pool is refreshed. After the restart, re-upload your documents. For this reason, do not run the full `pytest` suite against a stack you are actively demoing.
 - **A green local run is not evidence of portability.** A warm Docker cache hides the failures a reviewer hits first, which is why CI builds every image `--no-cache` from a clean checkout.
 
 ## Chat Surfaces
@@ -168,7 +195,7 @@ Last known green verification:
 
 ```text
 docker compose -p assessment exec backend pytest
-220 passed, 12 skipped, 4 warnings
+224 passed, 12 skipped, 4 warnings
 
 npm test --prefix frontend
 23 passed

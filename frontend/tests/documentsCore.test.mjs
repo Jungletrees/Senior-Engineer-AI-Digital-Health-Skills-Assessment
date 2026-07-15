@@ -37,6 +37,19 @@ test("/documents page always offers a way back to chat", async () => {
   assert.doesNotMatch(css, /\.back-to-chat[^{]*\{[^}]*display:\s*none/);
 });
 
+test("/documents page states PDF-only support and pops a toast on a rejected upload", async () => {
+  const source = await readFile(new URL("../src/app/documents/page.tsx", import.meta.url), "utf8");
+  const css = await readFile(new URL("../src/app/globals.css", import.meta.url), "utf8");
+
+  // Friendly, explicit copy that only PDFs are supported.
+  assert.match(source, /Only PDF files are supported/);
+  // A rejected file surfaces the reason through the dismissible toast, not a silent drop.
+  assert.match(source, /setToast\(\{ message: validation\.reason/);
+  assert.match(source, /className=\{`upload-toast upload-toast-\$\{toast\.kind\}`\}/);
+  assert.match(source, /role="alert"/);
+  assert.match(css, /\.upload-toast \{/);
+});
+
 test("upload limits drive MIME and size validation before network", () => {
   const wrongMime = { type: "text/plain", size: 1 };
   const oversized = { type: "application/pdf", size: 2 * 1024 * 1024 };

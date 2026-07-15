@@ -37,12 +37,25 @@ const STATUS_LABELS: Record<DocumentRow["status"], string> = {
   failed: "Failed",
 };
 
+type Toast = { message: string; kind: "error" | "info" };
+
 export default function DocumentsPage() {
   const [limits, setLimits] = useState<UploadLimits>(EMPTY_LIMITS);
   const [documents, setDocuments] = useState<DocumentRow[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [dragActive, setDragActive] = useState(false);
+
+  // A dismissible popup for upload feedback — friendlier than a static line, and it is where
+  // an "only PDF files are supported" message lands when someone drops the wrong file type.
+  useEffect(() => {
+    if (!toast) {
+      return;
+    }
+    const timer = window.setTimeout(() => setToast(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
 
   const processingIds = useMemo(
     () => documents.filter((document) => document.status === "processing").map((document) => document.id),
@@ -78,7 +91,9 @@ export default function DocumentsPage() {
     }
     const validation = validateUploadFile(file, limits);
     if (!validation.ok) {
-      setError(validation.reason);
+      // Pop a friendly notice (e.g. "Only PDF files can be uploaded.") rather than silently
+      // ignoring a wrong-type or oversize file.
+      setToast({ message: validation.reason ?? "That file can't be uploaded.", kind: "error" });
       return;
     }
     setError(null);
@@ -87,9 +102,13 @@ export default function DocumentsPage() {
       .then((created) => {
         setDocuments((current) => [created as DocumentRow, ...current]);
         setUploadProgress(null);
+        setToast({ message: `"${(created as DocumentRow).filename}" added. Preparing it for chat…`, kind: "info" });
       })
       .catch(() => {
-        setError("Upload failed.");
+        setToast({
+          message: "Upload failed. Please check the file is a PDF within the size and page limits, then try again.",
+          kind: "error",
+        });
         setUploadProgress(null);
       });
   }
@@ -125,7 +144,7 @@ export default function DocumentsPage() {
           <span aria-hidden="true">←</span> Back to chat
         </Link>
         <h1>My documents</h1>
-        <p>Add a PDF here, then ask questions about it in chat.</p>
+        <p>Add a PDF here, then ask questions about it in chat. Only PDF files are supported.</p>
       </header>
 
       <label
@@ -140,9 +159,18 @@ export default function DocumentsPage() {
         <input aria-label="Upload PDF" type="file" accept="application/pdf" onChange={onFileChange} />
         <span>Drop a PDF here or choose a file</span>
         <small>
-          PDF only, up to {limits.max_size_mb || "..."} MB and {limits.max_pages || "..."} pages
+          Only PDF files are supported, up to {limits.max_size_mb || "..."} MB and {limits.max_pages || "..."} pages
         </small>
       </label>
+
+      {toast ? (
+        <div className={`upload-toast upload-toast-${toast.kind}`} role="alert" aria-live="assertive">
+          <span>{toast.message}</span>
+          <button type="button" aria-label="Dismiss notification" onClick={() => setToast(null)}>
+            ×
+          </button>
+        </div>
+      ) : null}
 
       {uploadProgress !== null ? (
         <div className="upload-progress" aria-label="Upload progress">

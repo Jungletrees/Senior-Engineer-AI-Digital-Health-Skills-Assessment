@@ -756,13 +756,19 @@ async def _gemini_post_with_retry(
     payload: dict[str, Any],
     max_attempts: int = 7,
 ) -> dict[str, Any]:
-    """POST to Gemini, retrying transient 429/5xx with backoff.
+    """POST to Gemini, retrying transient rate limits, 5xx, and network errors with backoff.
 
     Gemini's free tier limits requests per minute, and a 659-page corpus produces many
     embedding batches. Without this, the first 429 failed the whole document — which is
     exactly what stalled ingestion. A rate limit is transient, so it is retried (honoring
     Retry-After when present) rather than treated as a permanent error. A 4xx that is not 429
     is a real client error and is raised immediately.
+
+    Transient transport errors are retried too. A long ingestion run makes hundreds of calls,
+    and a single DNS/connection blip (`No address associated with hostname`, a read timeout)
+    is not a status code — it is raised from `client.post` — so it would otherwise kill the
+    whole document even though the network recovers a second later. This is a real failure
+    mode on WSL2/Docker networking under load.
 
     The backoff climbs to 60s and runs enough attempts (2+4+8+16+32+60 ≈ 122s of waiting)
     that a request stuck behind a per-minute quota can wait the window out instead of giving
@@ -772,7 +778,22 @@ async def _gemini_post_with_retry(
 
     delay = 2.0
     for attempt in range(1, max_attempts + 1):
-        response = await client.post(url, headers={"x-goog-api-key": api_key}, json=payload)
+        try:
+            response = await client.post(url, headers={"x-goog-api-key": api_key}, json=payload)
+        except httpx.TransportError as exc:
+            # Connect/DNS/read-timeout errors are transient; retry them like a 5xx.
+            if attempt == max_attempts:
+                raise
+            logger.warning(
+                "gemini.transport_error type=%s attempt=%s/%s sleeping=%.1fs",
+                type(exc).__name__,
+                attempt,
+                max_attempts,
+                delay,
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, 60.0)
+            continue
         if response.status_code == 429 or response.status_code >= 500:
             if attempt == max_attempts:
                 response.raise_for_status()

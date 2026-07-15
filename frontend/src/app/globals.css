@@ -628,6 +628,68 @@ body {
   font-size: 0.95rem;
 }
 
+/* Elegant, auto-dismissing upload notification. Fixed to the viewport corner so it is visible
+   at every breakpoint without shifting the page layout. */
+.upload-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 50;
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  max-width: min(92vw, 420px);
+  padding: 14px 16px;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  color: #fff;
+  animation: toast-in 180ms ease-out;
+}
+
+.upload-toast-error {
+  background: #b3261e;
+}
+
+.upload-toast-info {
+  background: #1f6f43;
+}
+
+.upload-toast button {
+  flex: none;
+  margin: -4px -4px -4px 0;
+  padding: 0 6px;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.85;
+}
+
+.upload-toast button:hover {
+  opacity: 1;
+}
+
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .upload-toast {
+    animation: none;
+  }
+}
+
 .documents-table-band {
   max-width: 1040px;
   margin: 0 auto;

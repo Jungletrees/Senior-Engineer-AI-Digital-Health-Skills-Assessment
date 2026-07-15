@@ -87,11 +87,33 @@ def main() -> int:
     ok = True
     changed = False
 
+    # A generated corpus (the default compact manifest) is built once from its committed,
+    # deterministic generator rather than downloaded. Build all generated docs up front, then
+    # the per-doc loop below just verifies each one's pinned checksum.
+    if any(doc.get("source") == "generated" for doc in manifest["documents"]):
+        print("Building generated corpus documents (deterministic)...")
+        try:
+            from gold_standard.corpus.build_compact_corpus import build_all
+
+            build_all(FILES_DIR)
+        except ImportError as exc:
+            print(
+                f"    !! cannot build generated corpus: {exc}. "
+                "Install build deps with `pip install reportlab pillow`.",
+                file=sys.stderr,
+            )
+            return 1
+
     for doc in manifest["documents"]:
         dest = FILES_DIR / doc["filename"]
         print(f"[{doc['id']}] {doc['title']}")
 
-        if args.force or not dest.exists():
+        if doc.get("source") == "generated":
+            if not dest.exists():
+                print(f"    !! generator did not produce {dest}", file=sys.stderr)
+                ok = False
+                continue
+        elif args.force or not dest.exists():
             urls = [doc["url"]] + ([doc["mirror_url"]] if doc.get("mirror_url") else [])
             got = False
             for url in urls:

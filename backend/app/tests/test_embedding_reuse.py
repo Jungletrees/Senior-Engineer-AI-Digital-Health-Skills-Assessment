@@ -142,6 +142,39 @@ async def test_identical_content_in_a_different_document_is_not_re_embedded(
 
 
 @pytest.mark.asyncio
+async def test_reupload_by_a_different_session_does_not_re_embed_the_source(
+    session: AsyncSession,
+) -> None:
+    """The dedup scope is the whole vector store, not a user or a chat session.
+
+    A document already indexed by one user is re-uploaded by a *different* user in a *different*
+    chat session (a distinct document id, distinct file bytes, same content). Because embedding
+    reuse is keyed on the chunk content hash and the embedding model — with no session or user in
+    the key — the second upload embeds nothing and pays nothing: the source is deduplicated in the
+    vector database rather than indexed a second time.
+    """
+    # User A, session 1: first ingestion of the source.
+    doc_user_a = await _insert_document(session)
+    user_a = CountingEmbeddingClient()
+    source = [_chunk(0, "give ORS 10 ml/kg after each loose stool"), _chunk(1, "zinc for 14 days")]
+    vectors = await _embed_with_reuse(session, source, user_a)
+    await _store(session, doc_user_a, source, vectors)
+    assert len(user_a.embedded) == 2, "the first ingestion embeds the source once"
+
+    # User B, session 2: a separate document row (different id/bytes), identical content.
+    doc_user_b = await _insert_document(session)
+    assert doc_user_b != doc_user_a
+    user_b = CountingEmbeddingClient()
+    reused = await _embed_with_reuse(session, [_chunk(0, "give ORS 10 ml/kg after each loose stool"),
+                                              _chunk(1, "zinc for 14 days")], user_b)
+
+    assert user_b.embedded == [], "a re-upload in another session must not re-embed the source"
+    assert len(reused) == len(vectors)
+    for got, want in zip(reused, vectors, strict=True):
+        assert got == pytest.approx(want), "it reuses the exact vectors already in the store"
+
+
+@pytest.mark.asyncio
 async def test_only_the_new_chunks_of_an_overlapping_document_are_embedded(
     session: AsyncSession,
 ) -> None:

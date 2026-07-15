@@ -67,6 +67,43 @@ async def test_recovers_from_a_transient_server_error() -> None:
     assert body == {"ok": True}
 
 
+class _FlakyClient:
+    """Raises a transport error the first `fail_times` calls, then returns 200.
+
+    Models a DNS/connection blip mid-ingestion: not a status code, raised from post().
+    """
+
+    def __init__(self, fail_times: int) -> None:
+        self.fail_times = fail_times
+        self.calls = 0
+
+    async def post(self, url, headers, json):  # noqa: A002
+        self.calls += 1
+        if self.calls <= self.fail_times:
+            raise httpx.ConnectError("No address associated with hostname")
+        return _Resp(200, {"ok": True})
+
+
+@pytest.mark.asyncio
+async def test_recovers_from_a_transient_network_error() -> None:
+    client = _FlakyClient(fail_times=2)
+
+    body = await _gemini_post_with_retry(client, "http://x", "k", {}, max_attempts=5)
+
+    assert client.calls == 3  # two DNS failures, then success
+    assert body == {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_a_persistent_network_error_eventually_raises() -> None:
+    client = _FlakyClient(fail_times=99)
+
+    with pytest.raises(httpx.ConnectError):
+        await _gemini_post_with_retry(client, "http://x", "k", {}, max_attempts=3)
+
+    assert client.calls == 3
+
+
 @pytest.mark.asyncio
 async def test_a_persistent_rate_limit_eventually_raises() -> None:
     client = _Client([_Resp(429)])
