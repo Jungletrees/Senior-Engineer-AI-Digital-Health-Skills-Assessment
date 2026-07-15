@@ -1,6 +1,6 @@
 # Last Mile Health RAG Platform
 
-This repository implements a clinical-document retrieval-augmented generation system for uploaded PDF guidance. The stack keeps the original service boundaries: a Next.js document-management frontend, a Chainlit chat container, a FastAPI backend, and PostgreSQL with pgvector for document, chunk, audit, cache, and evaluation data.
+This repository implements a pdf-document retrieval-augmented generation system for uploaded PDF guidance. The stack keeps the original service boundaries: a Next.js document-management frontend, a Chainlit chat container, a FastAPI backend, and PostgreSQL with pgvector for document, chunk, audit, cache, and evaluation data.
 
 The backend is the source of truth for ingestion, retrieval, generation, guardrails, caching, scheduling, and gold-standard evaluation. Uploaded PDFs are validated and stored through the API, then the upload route visibly enqueues the ingestion worker to parse page metadata, chunk content, embed text, and index into PostgreSQL/pgvector. Chat requests run through input validation, exact/semantic cache lookup, hybrid retrieval, local cross-encoder reranking, optional query expansion, grounded answer generation, structured citation assembly, output filtering, and audit logging.
 
