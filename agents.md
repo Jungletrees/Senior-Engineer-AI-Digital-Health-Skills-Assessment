@@ -19,6 +19,15 @@ The team consists of five distinct, specialized roles. Each agent possesses a sp
 | **Test Agent** | `agents-skills/test-engineer-SKILL.md` | Implements and executes automated unit, integration, and E2E smoke tests for both backend and frontend. Owns and maintains the `tests-README.md` file. |
 | **GitPR Agent** | `agents-skills/skills.md` | Manages git workflows, performs frequent descriptive commits following semantic guidelines, and authors professional, comprehensive Pull Request descriptions. |
 
+Specialized corrective overlay skills for the RAG stress-test remediation phase:
+
+| Overlay Skill | Skill Spec Path | Primary Responsibilities |
+|---|---|---|
+| **RAG Ingestion Metadata Engineer** | `agents-skills/RAG-ingestion-metadata-engineer-SKILL.md` | Chunk-level thematic metadata, document/page inventory facts, sparse visual PDF extraction, numeric fact capture, and pgvector-ready metadata persistence. |
+| **RAG Retrieval Precision Engineer** | `agents-skills/RAG-retrieval-precision-engineer-SKILL.md` | Query intent analysis, document-aware retrieval quotas, metadata-filtered ANN pools, thematic retrieval, reranking diversity, and citation coverage. |
+| **RAG Evidence Reliability Engineer** | `agents-skills/RAG-evidence-reliability-engineer-SKILL.md` | Evidence-sufficiency gates, fast no-answer routing, schema-stable refusals, eval-safe rate limits, retry/idempotency state handling, and provider failure resilience. |
+| **RAG Stress Validation Engineer** | `agents-skills/RAG-stress-validation-engineer-SKILL.md` | Deterministic verification, targeted stress samples, gold-standard checks, and regression reporting without expensive full stress reruns. |
+
 ---
 
 ## 2. The Multi-Agent Build Loop (The Cycle Lifecycle)
