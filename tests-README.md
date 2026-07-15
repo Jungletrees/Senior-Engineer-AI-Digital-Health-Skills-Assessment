@@ -242,6 +242,14 @@ If you are developing locally with a Python virtual environment:
 
 ### 2.3 Mocking & Environmental Variables
 Deterministic tests do not make active calls to external LLMs or vector database providers.
+- **Hermetic runs when the container has live keys:** Most suites inject fake generation/embedding clients, but a few paths (e.g. the semantic-cache lookup in `test_rate_limit.py`, whose app does not override the embedding client) fall through to `get_embedding_client()`. If the running container was started with a real `GEMINI_API_KEY`/`OPENAI_API_KEY`, that path makes a live embedding call and can flake on provider rate limits. Run the deterministic suite with provider keys cleared so the deterministic fallback is used:
+
+    ```bash
+    docker compose -p assessment exec \
+      -e GEMINI_API_KEY= -e OPENAI_API_KEY= -e VOYAGE_API_KEY= -e ANTHROPIC_API_KEY= \
+      backend pytest
+    ```
+
 - **LLM/API Mocking:** Pytest fixtures intercept and mock Anthropic (`anthropic`), OpenAI (`openai`), and OpenRouter (`openrouter`) endpoints.
 - **Database Isolation:** All tests run inside a PostgreSQL transaction that automatically rolls back when the test terminates, preventing database pollution.
 - **BC2 Migration Tests:** `backend/app/tests/test_migrations.py` runs `alembic upgrade head` and `alembic downgrade base` against the containerized Postgres database. `backend/app/tests/test_schema_constraints.py` rebuilds the migration head for constraint checks, then validates generated `content_tsv`, `documents.content_hash` uniqueness, `page_images` uniqueness, `query_audit_log.idempotency_key` uniqueness, `agentops_summary`, and document cascade deletion behavior.
@@ -258,6 +266,7 @@ Deterministic tests do not make active calls to external LLMs or vector database
 - **BC14 Guardrail Tests:** `backend/app/tests/test_guardrails.py` verifies grounded/fabricated answers, leak canaries, PII provenance, empty-answer filtering, tool-result sanitizer delimiter defense, filtered-response cache blocking, input-validation audit rejection, security headers, and configured CORS. No hosted LLMs, hosted embeddings, hosted auth providers, or reranker downloads are used.
 - **BC15 Auth/Rate-Limit Tests:** `backend/app/tests/test_auth.py` and `backend/app/tests/test_rate_limit.py` verify JWT issuance/verification, explicit public document-route access for the local reviewer stack, anonymous-chat flag behavior, per-session limits, per-IP limits via `query_audit_log.client_ip`, `Retry-After`, and rate-limit-before-cache behavior. Rate-limit tests use DB fixtures rather than external counters.
 - **BC21-BC28 Corrective Tests:** Scheduler singleton tests verify Postgres advisory-lock execution and lock release. Cost/index/cache tests cover `MODEL_PRICING_JSON`, rate-limit indexes, and semantic-cache `embedding_model` scoping/drift cleanup. Numeric grounding tests enforce exact clinical numeric output matching, including 5 ml pass / 15 ml fail and tolerance ignored for generated answers. Anomaly/Judge/Gold tests cover cadence split, reproducible `JudgeAgent` metadata, SQLAlchemy-backed gold eval persistence, verified-question skipping, and rubric/deviation math. Deterministic tests inject fake chat and fake judge clients and never call hosted LLMs.
+- **RAG Stress Corrective Tests:** `backend/app/tests/test_query_analysis.py` verifies the deterministic query analyzer — external/current-fact classification, in-corpus false-positive guards, numeric/inventory/table/all-documents/comparison intents, entity and document-alias detection, and `resolve_document_ids` ordinal/name resolution — as a pure function with no DB or network. `backend/app/tests/test_evidence_gate.py` verifies the pre-retrieval external-fact refusal, the conservative post-retrieval numeric-evidence refusal (only when no number is present, scoped to `numeric_fact` intent), and the empty-evidence path. New `test_chat.py` cases cover the fast uncited external-fact no-answer (no retrieval, no generation), the numeric-evidence no-answer before generation, and a duplicate-after-terminal-rate-limit request re-raising `429` instead of a stale `in_flight`. A new `test_rate_limit.py` case asserts the IP-dimension `Retry-After` is computed from the IP window, not the session's.
 
 ### 2.4 Current Cycle Verification Log
 

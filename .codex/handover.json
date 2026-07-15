@@ -337,5 +337,74 @@
     ],
     "divergences_logged": "ARCHITECTURE (4).md section 18 records the both-surfaces decision, the response-presentation boundary, the [cite:n] citation contract, no-answer conversion for uncited claims, cache source_chunk_ids, and the Chainlit documented-component decision. Section 21 now documents corpus/input, answer-behavior, and deployment assumptions.",
     "verification_requirements": "Verified: backend pytest -> 161 passed, 12 skipped, 4 warnings in 62.95s; RAG system integration suite -> 17 passed; npm test --prefix frontend -> 21 passed; tsc --noEmit clean; python3 -m unittest chainlit_app.tests.test_chat -> 10 passed; npx playwright test e2e/chat-ui.spec.ts -> 16 passed in real Chromium covering both chat surfaces at 375x812, 768x1024, 1024x768, and 1440x900; both localhost:3000 and localhost:8000 checked live and screenshotted; backend health ok. Still pending: the upload-to-cited-answer live ingestion e2e, a clean-clone dry run, and real gold score runs (corpus fetch/checksum pinning/indexing/human expected-answer verification)."
+  },
+  {
+    "from_agent": "orchestrator",
+    "to_agent": "backend-ml-test-gitpr-agents",
+    "cycle_id": "RAG_STRESS_CORRECTIVES",
+    "status": "planned",
+    "branch": "codex/rag-precision-evidence-reliability-correctives",
+    "objective": "Implement a coherent, minimally risky corrective slice from stress-test-results/RAG_STRESS_ENGINEERING_HANDOFF.md that is deterministically verifiable without the local stress corpus or a reindex: (1) a deterministic query analyzer, (2) an evidence-sufficiency gate with fast schema-stable no-answer routing targeting the failing OOS category and the in_flight/500 reliability artifacts, (3) the IP-dimension rate-limit retry-after fix, and (4) an idempotency terminal-state fix so a duplicate after a failed attempt cannot loop forever as {status:in_flight}.",
+    "skills_loaded": [
+      "agents.md (Orchestrator)",
+      "agents-skills/RAG-retrieval-precision-engineer-SKILL.md",
+      "agents-skills/RAG-evidence-reliability-engineer-SKILL.md",
+      "agents-skills/RAG-stress-validation-engineer-SKILL.md",
+      "agents-skills/RAG-ingestion-metadata-engineer-SKILL.md (read; Phase-2 deferred as documented follow-up)",
+      "agents-skills/Backend-engineer-SKILL.md",
+      "agents-skills/test-engineer-SKILL.md"
+    ],
+    "files_expected_to_change": [
+      "backend/app/retrieval/query_analysis.py (new)",
+      "backend/app/chat/evidence_gate.py (new)",
+      "backend/app/api/v1/chat.py",
+      "backend/app/chat/response_presenter.py",
+      "backend/app/security/rate_limit.py",
+      "backend/app/settings.py",
+      "backend/app/tests/test_query_analysis.py (new)",
+      "backend/app/tests/test_evidence_gate.py (new)",
+      "backend/app/tests/test_chat.py",
+      "backend/app/tests/test_rate_limit.py",
+      "build-plans-architecture/ARCHITECTURE (4).md (§18 decision log)",
+      "tests-README.md",
+      "plan.md",
+      ".env.example"
+    ],
+    "scope_decision": "Deterministically verifiable reliability + retrieval-analysis slice only. Deferred as documented follow-ups (carry reindex/OCR/corpus dependencies that cannot be verified by the deterministic suite in one pass): Phase-2 ingestion metadata columns + document inventory + sparse-visual OCR, and Phase-3 document-aware per-document retrieval quotas / metadata-filtered ANN pools.",
+    "non_negotiables_honored": "No schema migration (evidence-gate reason persisted via existing agent_trace_log record_decision). No hosted LLM/embedding/reranker in deterministic tests. RRF stays ordering-only; confidence gate still uses reranker score. /chat ordering (validate -> claim/audit -> rate-limit -> cache -> evidence-gate -> retrieve -> generate -> present -> filter -> cache-write) preserved; the new evidence gate is inserted after cache lookup as a deliberate, tested addition. Public anonymous rate limits unchanged.",
+    "verification_plan": "1) test_query_analysis.py + test_evidence_gate.py unit suites. 2) test_chat.py + test_rate_limit.py + test_rag_system_integration.py + test_cache.py + test_retrieval.py + test_orchestrator.py in Docker. 3) Full backend pytest. 4) Targeted stress sample (SYN/NUM/INF/OOS ids) via local runner with --skip-upload --rotate-client-ip, inspecting raw answers/citations not just aggregate score. Full 100-question rerun intentionally skipped per RAG-stress-validation-engineer skill."
+  },
+  {
+    "from_agent": "backend-ml-test-agents",
+    "to_agent": "gitpr-agent",
+    "cycle_id": "RAG_STRESS_CORRECTIVES",
+    "status": "implemented_and_deterministically_verified",
+    "branch": "codex/rag-precision-evidence-reliability-correctives",
+    "files_modified": [
+      "backend/app/retrieval/query_analysis.py",
+      "backend/app/chat/evidence_gate.py",
+      "backend/app/api/v1/chat.py",
+      "backend/app/chat/response_presenter.py",
+      "backend/app/security/rate_limit.py",
+      "backend/app/settings.py",
+      "backend/app/tests/test_query_analysis.py",
+      "backend/app/tests/test_evidence_gate.py",
+      "backend/app/tests/test_chat.py",
+      "backend/app/tests/test_rate_limit.py",
+      "build-plans-architecture/ARCHITECTURE (4).md",
+      "tests-README.md",
+      "plan.md",
+      ".env.example",
+      ".codex/handover.json"
+    ],
+    "implementation_summary": "Added a deterministic query analyzer, an evidence-sufficiency gate (fast external/current-fact refusal pre-retrieval + conservative numeric-evidence refusal post-retrieval, reason traced to agent_trace_log), the IP-dimension rate-limit retry-after fix, and the idempotency terminal-state fix so a duplicate of a failed attempt cannot loop as {status:in_flight}. No schema migration; no hosted providers in tests; RRF stays ordering-only; /chat ordering preserved with the evidence gate inserted after cache lookup.",
+    "test_commands_executed": [
+      "docker compose -p assessment exec backend pytest app/tests/test_query_analysis.py app/tests/test_evidence_gate.py -q",
+      "docker compose -p assessment exec -e GEMINI_API_KEY= -e OPENAI_API_KEY= -e VOYAGE_API_KEY= -e ANTHROPIC_API_KEY= backend pytest app/tests/test_rate_limit.py app/tests/test_chat.py -q",
+      "docker compose -p assessment exec -e GEMINI_API_KEY= -e OPENAI_API_KEY= -e VOYAGE_API_KEY= -e ANTHROPIC_API_KEY= backend pytest -q"
+    ],
+    "test_results_summary": "Unit suites: 26 passed. Rate-limit + chat suites (hermetic): 23 passed. Full backend suite (hermetic, provider keys cleared): 255 passed, 12 skipped, 4 warnings in ~109s.",
+    "divergences_logged": "ARCHITECTURE (4).md section 18 now records the four corrective decisions. No intentional divergence from the requested architecture; Phase-2 ingestion metadata and Phase-3 per-document retrieval quotas are deferred as documented follow-ups because they require a corpus reindex/OCR that the deterministic suite cannot verify in this pass.",
+    "verification_requirements": "Deterministic verification complete. Remaining: rebuild the backend image so the live stack reflects these changes, then run the targeted stress sample with a real embedding/generation key and the 3 stress PDFs re-uploaded/indexed (deterministic fixtures wipe the shared DB). Note the deterministic suite is only hermetic when provider keys are cleared, because the semantic-cache lookup in test_rate_limit.py's app does not override the embedding client."
   }
 ]

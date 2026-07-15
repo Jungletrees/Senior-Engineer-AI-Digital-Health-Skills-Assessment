@@ -316,3 +316,31 @@ Close the explicit production gaps left after BC16-BC28: wire Chainlit to `/api/
 - [ ] Full backend/frontend verification after targeted fixes.
 - [ ] Clean-clone dry run.
 - [ ] Real gold manual/CI score runs remain untrusted until corpus fetch/checksum pinning, indexing, and human expected-answer verification are complete.
+
+---
+
+## Active Cycle: RAG Stress Correctives (Precision + Evidence Reliability)
+
+**Status:** [x] Implemented and deterministically verified. Branch: `codex/rag-precision-evidence-reliability-correctives`.
+
+### Objective
+Implement a coherent, minimally risky corrective slice from `stress-test-results/RAG_STRESS_ENGINEERING_HANDOFF.md` that is deterministically verifiable without the local stress corpus or a reindex, targeting the biggest failing category (Out-of-Scope / No-Answer) and the reliability artifacts (`in_flight` rows, `429`s, retry-after bug).
+
+### Completed Work
+- **Deterministic query analyzer** (`backend/app/retrieval/query_analysis.py`): typed `QueryAnalysis` + `analyze_query` (intent, document aliases, entities, requested attributes, numeric requirement) and `resolve_document_ids`. Pure, DB/network-free.
+- **Evidence-sufficiency gate** (`backend/app/chat/evidence_gate.py` + `backend/app/api/v1/chat.py`): fast pre-retrieval refusal of external/current-fact questions and a conservative post-retrieval numeric-evidence refusal. Reason persisted to `agent_trace_log` (no migration). New `EXTERNAL_FACT_MESSAGE` in `response_presenter.py`; `EVIDENCE_GATE_ENABLED` flag.
+- **Rate-limit IP retry-after fix** (`backend/app/security/rate_limit.py`): `_retry_after_for_ip` computes the wait from the IP window when the IP ceiling is the limiting dimension.
+- **Idempotency terminal-state fix** (`backend/app/api/v1/chat.py`): a duplicate of a terminally failed attempt (`validation_rejected`/`rate_limited`) re-raises the terminal error instead of looping to a stale `{"status":"in_flight"}`.
+
+### Deferred as documented follow-ups (reindex/OCR/corpus dependencies; not deterministically verifiable this pass)
+- Phase 2 ingestion metadata columns + document inventory + sparse-visual OCR.
+- Phase 3 document-aware per-document retrieval quotas / metadata-filtered ANN pools (`resolve_document_ids` lays the groundwork).
+
+### Verification Status
+- [x] `pytest app/tests/test_query_analysis.py app/tests/test_evidence_gate.py` — 26 passed.
+- [x] `pytest app/tests/test_rate_limit.py app/tests/test_chat.py` (keys cleared) — 23 passed.
+- [x] Full backend `pytest` with provider keys cleared — **255 passed, 12 skipped, 4 warnings** in ~109s.
+- [ ] Targeted stress sample against a rebuilt image with a real embedding/generation key and the 3 stress PDFs re-indexed (deterministic fixtures wipe the shared DB, so the corpus must be re-uploaded first).
+
+### Architecture Decisions Logged
+- `build-plans-architecture/ARCHITECTURE (4).md` §18: query analyzer, evidence-sufficiency gate, IP-dimension retry-after, idempotency terminal-state handling.
