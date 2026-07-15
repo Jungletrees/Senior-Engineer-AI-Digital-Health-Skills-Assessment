@@ -4,7 +4,41 @@ This repository implements a pdf-document retrieval-augmented generation system 
 
 The backend is the source of truth for ingestion, retrieval, generation, guardrails, caching, scheduling, and gold-standard evaluation. Uploaded PDFs are validated and stored through the API, then the upload route visibly enqueues the ingestion worker to parse page metadata, chunk content, embed text, and index into PostgreSQL/pgvector. Chat requests run through input validation, exact/semantic cache lookup, hybrid retrieval, local cross-encoder reranking, optional query expansion, grounded answer generation, structured citation assembly, output filtering, and audit logging.
 
-Answers are grounded in the uploaded documents and carry Chicago-style superscript citations at the end of each sentence they support, with a `Sources` list built from document metadata rather than model text. Two chat surfaces are supported and behave identically: Next.js on `:3000` and Chainlit on `:8000`. Real gold-evaluation score floors remain trust-gated until corpus download/checksum/indexing and human expected-answer verification are complete.
+Answers are grounded in the uploaded documents and carry Chicago-style superscript citations at the end of each sentence they support, with a `Sources` list built from document metadata rather than model text. Two chat surfaces are supported and behave identically: Next.js on `:3000` and Chainlit on `:8000`. The gold-standard evaluation runs end-to-end against a deterministic generated corpus; scores are labelled with the judge used and are only Opus-comparable when an Anthropic key pins the Opus judge.
+
+## Documentation Map
+
+Where each piece of documentation lives, for quick navigation.
+
+| Topic | Document | What's in it |
+|---|---|---|
+| **Start here** | [`README.md`](./README.md) (this file) | Overview, sitemap, test results, local run, testing, deployment plan, security/scalability, assumptions |
+| Local run & environment | [`local-setup.md`](./local-setup.md) | Step-by-step setup and the environment/portability risks (disk, RAM, ports, arch, the pytest schema-drop) |
+| Architecture & decisions | [`build-plans-architecture/ARCHITECTURE (4).md`](<./build-plans-architecture/ARCHITECTURE (4).md>) | Full ingestion→retrieval→generation walkthrough, the decision log, and the complete assumptions list (§21) |
+| Production deployment | [`DEPLOYMENT.md`](./DEPLOYMENT.md) | Cloud-provider choice + rationale, CI/CD strategy, infrastructure, secrets management, observability, DR, cost |
+| Testing — how & results | [`tests-README.md`](./tests-README.md) | Every test suite, exact commands, and last results (backend, frontend, Chainlit, Playwright, gold eval) |
+| Gold-standard evaluation | [`gold_standard/README.md`](./gold_standard/README.md) | The deterministic multi-type corpus, the questions, how to run the eval, and the honest score caveats |
+| Latest gold-eval report | [`gold_standard/gold_eval_report.md`](./gold_standard/gold_eval_report.md) | Committed report from the most recent run (overall + per-question) |
+| Configuration & API keys | [`.env.example`](./.env.example) | Every backend/DB/provider variable, plus the API-key-by-agentic-task map and secrets posture |
+| Frontend config | [`frontend/.env.local.example`](./frontend/.env.local.example) · [`frontend/README.md`](./frontend/README.md) | The single browser-facing base-URL var; frontend notes |
+| Chainlit surface | [`chainlit_app/chainlit.md`](./chainlit_app/chainlit.md) | The plain-language Chainlit welcome page |
+| Agent orchestration | [`agents.md`](./agents.md) | The multi-agent mesh, coordination, and development guidelines |
+| Submission checklist audit | [`build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md`](./build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md) | Per-item pass/partial/not-done status against the assessment checklist |
+| Build plans & handoffs | [`build-plans-architecture/`](./build-plans-architecture/) | The incremental build plans (BC-series) and engineering handoff prompts |
+
+## Latest Test Results
+
+Full commands and per-suite detail are in [`tests-README.md`](./tests-README.md); the gold run is in [`gold_standard/gold_eval_report.md`](./gold_standard/gold_eval_report.md).
+
+| Suite | Command | Result |
+|---|---|---|
+| Backend (pytest) | `docker compose -p assessment exec backend pytest` | **224 passed, 12 skipped** |
+| Frontend (node --test) | `npm test --prefix frontend` | **24 passed** |
+| Chainlit client | `python3 -m unittest chainlit_app.tests.test_chat` | **10 passed** |
+| Playwright e2e (real Chromium) | `npx playwright test e2e/chat-ui.spec.ts` | **16 passed** (both surfaces @ 375/768/1024/1440 px) |
+| Gold eval (compact corpus) | `python -m gold_standard.runner --trigger manual` | **91.12 / 100** over 8 questions |
+
+Gold eval by category: **dosing 100 · refusal 100 · semantic 100 · synthesis 88.75 · procedure 66.5**. Every precise lookup (table/numeric, OCR-only, low-lexical-overlap semantic, out-of-corpus refusal) scores 100; the cross-document synthesis question cites both source documents; prose questions earn honest partial exact-fact credit. The judge is the local Gemini fallback (logged and recorded in run metadata), **not** the pinned Anthropic Opus, so the number is not an Opus-comparable floor. One scheduler concurrency test is known-flaky under load (documented in `tests-README.md`); it is not a production defect.
 
 ## Reviewer Build Status
 
@@ -24,26 +58,6 @@ Answers are grounded in the uploaded documents and carry Chicago-style superscri
 | Gold-standard workflow | Runs end-to-end on the compact corpus | A deterministic, generated 4-PDF corpus (table / hierarchy / prose / scanned-OCR) indexes and the eval scores **91.12/100** over 8 questions (table, semantic, hierarchy, OCR, cross-doc synthesis, refusal). The judge is the honest Gemini fallback, not the pinned Opus, so the number is not an Opus-comparable floor. The real ~659-page WHO corpus needs a paid/fresh-project embedding key. |
 | Clean-clone validation | Not complete | A clean clone has not been run for this checklist pass. |
 | AWS deployment | Planned | AWS architecture, Lambda/Bedrock rationale, security, and CI/CD plan are documented; no live deployment or IaC exists. |
-
-## Documentation Map
-
-Where to find each piece of documentation, for quick navigation.
-
-| Topic | Document | What's in it |
-|---|---|---|
-| **Start here** | [`README.md`](./README.md) (this file) | Overview, architecture summary, local run, testing, deployment plan, security/scalability, assumptions |
-| Local run & environment | [`local-setup.md`](./local-setup.md) | Step-by-step setup and the environment/portability risks (disk, RAM, ports, arch, the pytest schema-drop) |
-| Architecture & decisions | [`build-plans-architecture/ARCHITECTURE (4).md`](<./build-plans-architecture/ARCHITECTURE (4).md>) | Full ingestion→retrieval→generation walkthrough, the decision log, and the complete assumptions list (§21) |
-| Production deployment | [`DEPLOYMENT.md`](./DEPLOYMENT.md) | Cloud-provider choice + rationale, CI/CD strategy, infrastructure, secrets management, observability, DR, cost |
-| Testing — how & results | [`tests-README.md`](./tests-README.md) | Every test suite, exact commands, and last results (backend, frontend, Chainlit, Playwright, gold eval) |
-| Gold-standard evaluation | [`gold_standard/README.md`](./gold_standard/README.md) | The deterministic multi-type corpus, the questions, how to run the eval, and the honest score caveats |
-| Latest gold-eval report | [`gold_standard/gold_eval_report.md`](./gold_standard/gold_eval_report.md) | Committed report from the most recent run (overall + per-question) |
-| Configuration & API keys | [`.env.example`](./.env.example) | Every backend/DB/provider variable, plus the API-key-by-agentic-task map and secrets posture |
-| Frontend config | [`frontend/.env.local.example`](./frontend/.env.local.example) · [`frontend/README.md`](./frontend/README.md) | The single browser-facing base-URL var; frontend notes |
-| Chainlit surface | [`chainlit_app/chainlit.md`](./chainlit_app/chainlit.md) | The plain-language Chainlit welcome page |
-| Agent orchestration | [`agents.md`](./agents.md) | The multi-agent mesh, coordination, and development guidelines |
-| Submission checklist audit | [`build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md`](./build-plans-architecture/SUBMISSION_CHECKLIST_STATUS.md) | Per-item pass/partial/not-done status against the assessment checklist |
-| Build plans & handoffs | [`build-plans-architecture/`](./build-plans-architecture/) | The incremental build plans (BC-series) and engineering handoff prompts |
 
 ## Assumptions
 
