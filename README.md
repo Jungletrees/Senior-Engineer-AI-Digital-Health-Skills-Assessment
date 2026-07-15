@@ -32,7 +32,8 @@ Full commands and per-suite detail are in [`tests-README.md`](./tests-README.md)
 
 | Suite | Command | Result |
 |---|---|---|
-| Backend (pytest) | `docker compose -p assessment exec backend pytest` | **224 passed, 12 skipped** |
+| Backend (pytest) | `docker compose -p assessment exec backend pytest` | **266 passed, 12 skipped** |
+| RAG stress sample | `python3 scripts/rag_stress_benchmark.py --skip-upload --rotate-client-ip ...` | **12 / 12 passed**, average **94.44** |
 | Frontend (node --test) | `npm test --prefix frontend` | **24 passed** |
 | Chainlit client | `python3 -m unittest chainlit_app.tests.test_chat` | **10 passed** |
 | Playwright e2e (real Chromium) | `npx playwright test e2e/chat-ui.spec.ts` | **16 passed** (both surfaces @ 375/768/1024/1440 px) |
@@ -44,7 +45,8 @@ Gold eval by category: **dosing 100 · refusal 100 · semantic 100 · synthesis 
 
 | Workstream | Status | Evidence / reviewer note |
 |---|---|---|
-| Backend deterministic suite | Verified complete | Full backend run: `224 passed, 12 skipped, 4 warnings`. |
+| Backend deterministic suite | Verified complete | Full backend run: `266 passed, 12 skipped`. |
+| RAG stress corrective sample | Verified complete | Targeted 12-question live sample across synthesis, numeric citation, semantic inference, and out-of-scope refusal passed **12/12** with average score **94.44** after preserving indexed corpus and clearing only response caches. |
 | FastAPI health/docs | Complete | `/health` returns `{"status":"ok","database":"ok"}` in the last smoke test; OpenAPI is available at `/docs`. |
 | Documents API validation/storage | Complete for local public route contract | Upload validation, storage, dedup, list, poll, delete, and background worker enqueueing are implemented without IAM/JWT gating; deterministic route tests assert public access plus worker scheduling for new uploads and no reschedule for indexed duplicates. |
 | Ingestion worker | Verified complete in deterministic tests | Worker path indexes a `processing` document, persists chunks/page images, and marks it `indexed` under fake clients. |
@@ -209,16 +211,19 @@ Last known green verification:
 
 ```text
 docker compose -p assessment exec backend pytest
-224 passed, 12 skipped, 4 warnings
+266 passed, 12 skipped
 
 npm test --prefix frontend
-23 passed
+24 passed
 
 python3 -m unittest chainlit_app.tests.test_chat
 10 passed
 
 npx playwright test e2e/chat-ui.spec.ts   (real Chromium, both chat surfaces)
 16 passed
+
+python3 scripts/rag_stress_benchmark.py --skip-upload --rotate-client-ip ...
+12 / 12 passed, average score 94.44
 
 backend health smoke
 {"status":"ok","database":"ok"}

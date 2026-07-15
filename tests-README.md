@@ -14,11 +14,12 @@ Automated tests are divided into three isolated, progressive layers:
 
 ## Current Reviewer Test Status
 
-All results below are from the chat-UI/response-presentation buildrun on branch `codex/chat-ui-requirement-polish`.
+All results below are from the RAG precision/evidence reliability buildrun on branch `codex/rag-precision-evidence-reliability-correctives`.
 
 | Tier | Status | Command and last result |
 |---|---|---|
-| Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> **`224 passed, 12 skipped, 4 warnings`** |
+| Backend deterministic full suite | Verified complete | `docker compose -p assessment exec backend pytest` -> **`266 passed, 12 skipped`** |
+| Targeted RAG stress sample | Verified complete | `python3 scripts/rag_stress_benchmark.py --skip-upload --rotate-client-ip ...` -> **`12 / 12 passed`**, average score **`94.44`** across synthesis, numeric citation, semantic inference, and out-of-scope refusal |
 | Backend RAG system integration suite | Verified complete (new) | `docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py -vv` -> **`17 passed`** |
 | Model router + provider selection | Verified complete (new) | `pytest app/tests/test_model_router.py app/tests/test_generation_provider.py` -> **`12 + 12 passed`**: cheapest-configured-provider routing, placeholder-key rejection, Gemini/OpenAI/Anthropic request shapes, honest degradation |
 | Judge provider routing | Verified complete (new) | `pytest app/tests/test_judge_reproducibility.py` -> **`5 passed`**: judge pinned to Anthropic Opus, Gemini/OpenAI fallback clients, deterministic fallback, reasoning-part filtering |
@@ -270,11 +271,11 @@ Deterministic tests do not make active calls to external LLMs or vector database
 
 ### 2.4 Current Cycle Verification Log
 
-Chat-UI and response-presentation buildrun (branch `codex/chat-ui-requirement-polish`):
+RAG precision/evidence reliability buildrun (branch `codex/rag-precision-evidence-reliability-correctives`):
 
 ```text
 docker compose -p assessment exec backend pytest
-224 passed, 12 skipped, 4 warnings
+266 passed, 12 skipped
 
 docker compose -p assessment exec backend pytest app/tests/test_rag_system_integration.py -q
 17 passed in 21.50s
@@ -292,6 +293,9 @@ PLAYWRIGHT_BASE_URL=http://localhost:3000 \
 PLAYWRIGHT_CHAINLIT_BASE_URL=http://localhost:8000 \
 npx playwright test e2e/chat-ui.spec.ts
 16 passed (real Chromium)
+
+python3 scripts/rag_stress_benchmark.py --skip-upload --rotate-client-ip ...
+12 / 12 passed, average score 94.44
 
 curl -s http://localhost:6100/health
 {"status":"ok","database":"ok"}
