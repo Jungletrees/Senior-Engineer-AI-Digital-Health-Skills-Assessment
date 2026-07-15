@@ -235,7 +235,23 @@ Do not trust gold scores until the corpus PDFs have been fetched, SHA-256 hashes
 
 ## Security Posture
 
-### API keys
+### API keys by agentic task
+
+Each agent in the pipeline chooses its provider from the cheapest **configured** key that suits its task (`backend/app/core/model_router.py`). The one exception is the JudgeAgent, which is **pinned to Anthropic Opus** and never cost-routed, because a grader must be stable across runs.
+
+| Agent / task | Key it uses (cost order) | Local default model | Rationale |
+|---|---|---|---|
+| Answer generation (`/chat`) | `GEMINI` → `OPENAI` → `ANTHROPIC` | `gemini-3.1-flash-lite` | Cheapest capable model; answer quality is the product |
+| Embeddings (semantic search) | `GEMINI` → `OPENAI` → `VOYAGE` | `gemini-embedding-001` (1536-dim) | Must match `EMBEDDING_DIM`; changing it is a re-index |
+| Fast/mechanical (summaries, query expansion, planning) | `GEMINI` → `OPENAI` → `ANTHROPIC` | `gemini-3.1-flash-lite` | Cheapest small model; paying Opus rates here is waste |
+| Ingestion planning (ingestion agent) | `ANTHROPIC`, else deterministic | agent loop | Structure/OCR judgement; falls back to a deterministic per-page path with no key |
+| **JudgeAgent (grading, gold eval)** | **`ANTHROPIC` only** | **`claude-opus-4-8`** | **Pinned, not cost-routed.** A non-Opus judge is logged and its scores are marked not comparable to an Opus-judged baseline |
+
+`MODEL_ROUTING=auto` (default) picks the cheapest suited provider per task; `MODEL_ROUTING=manual` honors the pinned `GENERATION_MODEL_PRIMARY`/`_FAST`. The provider is derived from the model name plus which keys are real (`gemini-*` → `GEMINI_API_KEY`, `claude-*` → `ANTHROPIC_API_KEY`, `gpt-*`/`text-embedding-*` → `OPENAI_API_KEY`, `voyage-*` → `VOYAGE_API_KEY`).
+
+**With no key**, the system degrades and says so (a `model_status` notice in both chat UIs, plus an audit-log row). A reviewer judging answer quality needs at least a generation key and an embedding key; a gold-eval score needs an Anthropic key for the pinned Opus judge, or its metadata records that a fallback judge scored it. Full per-key detail is in `.env.example`.
+
+### API keys — security posture
 
 Provider keys are the highest-value secret here — they are spendable. Full posture in [DEPLOYMENT.md § Secrets and API Key Management](./DEPLOYMENT.md); the rules that shape the code:
 

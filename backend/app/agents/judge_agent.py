@@ -222,21 +222,42 @@ class JudgeAgent:
 
 
 def _default_client(model: str, temperature: float) -> JudgeModelClient:
-    """Select the judge provider from the model name and configured keys.
+    """Select the judge client for the configured judge model.
 
-    Mirrors the generation router: the provider is derived from the model, and a placeholder
-    key counts as absent. If nothing is configured, the deterministic judge is used and the
-    caller is warned — the gold score then reflects a heuristic, not an LLM judge, which is a
-    fact the reviewer must see rather than have hidden.
+    POLICY: the judge is pinned to Anthropic Opus and is deliberately NOT part of the
+    cost-optimizing router that the generation and embedding agents use. A grader must be
+    stable and high-quality across runs — routing it to whatever is cheapest would make
+    score trends measure the judge's drift instead of the system's.
+
+    The provider is still derived from the model name so a keyless local deployment can run
+    the eval at all (with Gemini, the only key available in that setup). But whenever the
+    judge is NOT the intended Anthropic model, that is logged loudly: a score judged by a
+    fallback model must never be silently compared against an Opus-judged baseline. The run
+    metadata records the judge model regardless, so the record is always truthful.
     """
     import os
 
     from app.core.model_router import is_real_key
 
     lowered = model.lower()
+
+    if lowered.startswith("claude") and is_real_key(settings.anthropic_api_key):
+        return AnthropicJudgeModelClient(model, temperature)
+
+    # Anything below here is a fallback from the pinned Anthropic Opus policy.
     if lowered.startswith("gemini") and is_real_key(os.getenv("GEMINI_API_KEY", "")):
+        logger.warning(
+            "judge_agent.not_pinned_provider model=%s provider=gemini "
+            "(policy is Anthropic Opus; scores are NOT comparable to an Opus-judged baseline)",
+            model,
+        )
         return GeminiJudgeModelClient(os.environ["GEMINI_API_KEY"], model, temperature)
     if lowered.startswith(("gpt-", "o1", "o3", "o4")) and is_real_key(os.getenv("OPENAI_API_KEY", "")):
+        logger.warning(
+            "judge_agent.not_pinned_provider model=%s provider=openai "
+            "(policy is Anthropic Opus; scores are NOT comparable to an Opus-judged baseline)",
+            model,
+        )
         return OpenAIJudgeModelClient(os.environ["OPENAI_API_KEY"], model, temperature)
     if is_real_key(settings.anthropic_api_key):
         return AnthropicJudgeModelClient(model, temperature)

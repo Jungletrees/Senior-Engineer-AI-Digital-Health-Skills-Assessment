@@ -10,8 +10,11 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # Production default. Gemini entries are added by `.env` for the local reviewer stack; see
 # `.env.example` for why the local stack runs a different provider from the production one.
 _DEFAULT_MODEL_PRICING_JSON = (
-    '{"claude-sonnet-5":{"input_per_mtok":3.0,"output_per_mtok":15.0},'
+    '{"claude-opus-4-8":{"input_per_mtok":5.0,"output_per_mtok":25.0},'
+    '"claude-sonnet-5":{"input_per_mtok":3.0,"output_per_mtok":15.0},'
     '"claude-haiku-4-5":{"input_per_mtok":0.8,"output_per_mtok":4.0},'
+    '"gpt-4.1-mini":{"input_per_mtok":0.40,"output_per_mtok":1.60},'
+    '"gpt-4o-mini":{"input_per_mtok":0.15,"output_per_mtok":0.60},'
     '"gemini-3.1-flash-lite":{"input_per_mtok":0.10,"output_per_mtok":0.40},'
     '"gemini-2.5-flash-lite":{"input_per_mtok":0.10,"output_per_mtok":0.40}}'
 )
@@ -77,7 +80,12 @@ class Settings(BaseSettings):
     # A factual answer with no surviving citation cannot be shown as grounded; it is
     # converted to the concise no-answer instead.
     require_sentence_citations: bool = True
-    judge_model: str = "claude-haiku-4-5"
+    # The judge is pinned to Anthropic Opus by policy, NOT routed by the cost optimizer.
+    # A grader must be stable and high-quality across runs, or score trends measure the
+    # judge's drift rather than the system's. Local runs override this to Gemini via .env
+    # only because that is the key available; the run metadata always records which judge
+    # actually scored, so a Gemini-judged score is never mistaken for an Opus-judged one.
+    judge_model: str = "claude-opus-4-8"
     judge_temperature: float = 0.0
     judge_rubric_version: int = 1
     grounding_tsvector_config: str = "english"

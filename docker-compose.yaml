@@ -17,7 +17,8 @@ services:
       MODEL_ROUTING: ${MODEL_ROUTING:-auto}
       GENERATION_MODEL_PRIMARY: ${GENERATION_MODEL_PRIMARY:-claude-sonnet-5}
       GENERATION_MODEL_FAST: ${GENERATION_MODEL_FAST:-claude-haiku-4-5}
-      JUDGE_MODEL: ${JUDGE_MODEL:-claude-haiku-4-5}
+      # Pinned to Anthropic Opus by policy (reproducible grader). Not cost-routed.
+      JUDGE_MODEL: ${JUDGE_MODEL:-claude-opus-4-8}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-text-embedding-3-small}
       EMBEDDING_DIM: ${EMBEDDING_DIM:-1536}
       MODEL_PRICING_JSON: ${MODEL_PRICING_JSON:-}
