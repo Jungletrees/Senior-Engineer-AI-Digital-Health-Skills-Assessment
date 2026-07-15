@@ -19,6 +19,7 @@ from app.cache.exact import lookup_exact_cache, write_exact_cache
 from app.cache.semantic import write_semantic_cache
 from app.chat.response_presenter import (
     DOCUMENT_PREPARING_MESSAGE,
+    EXTERNAL_FACT_MESSAGE,
     NO_ANSWER_MESSAGE,
     RETRIEVAL_UNAVAILABLE_MESSAGE,
     UPLOAD_FIRST_MESSAGE,
@@ -432,6 +433,78 @@ async def test_cache_hit_rebuilds_the_same_reference_list(migrated_session: Asyn
         citation["reference"] for citation in first.json()["citations"]
     ]
     assert generation.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_external_current_fact_refused_before_retrieval(migrated_session: AsyncSession) -> None:
+    """An external/current-fact question is refused by the evidence gate, fast and uncited."""
+    document_id = await _insert_indexed_document(migrated_session)
+    session_id = await _insert_session(migrated_session)
+    generation = FakeGenerationClient()
+    retrieval = FakeRetrievalAgent(_candidate(document_id))
+    app = _chat_app(migrated_session, retrieval, generation)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/chat",
+            json={"session_id": str(session_id), "message": "What is the boiling point of water?"},
+        )
+
+    payload = response.json()
+    assert payload["answer"] == EXTERNAL_FACT_MESSAGE
+    assert payload["cache_status"] == "no_answer"
+    assert payload["citations"] == []
+    assert payload["source_chunk_ids"] == []
+    # Fast: neither retrieval nor generation ran.
+    assert retrieval.calls == 0
+    assert generation.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_numeric_question_without_numeric_evidence_refuses_before_generation(
+    migrated_session: AsyncSession,
+) -> None:
+    document_id = await _insert_indexed_document(migrated_session)
+    session_id = await _insert_session(migrated_session)
+    # The retrieved chunk is on-topic but contains no number at all.
+    generation = FakeGenerationClient()
+    retrieval = FakeRetrievalAgent(_candidate(document_id))
+    app = _chat_app(migrated_session, retrieval, generation)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/chat",
+            json={"session_id": str(session_id), "message": "How many models are in the model zoo?"},
+        )
+
+    payload = response.json()
+    assert payload["answer"] == NO_ANSWER_MESSAGE
+    assert payload["citations"] == []
+    # Retrieval ran (needed to inspect evidence) but generation was skipped.
+    assert retrieval.calls == 1
+    assert generation.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_duplicate_after_terminal_rate_limit_does_not_stay_in_flight(
+    migrated_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A retry of a rate-limited turn re-raises 429 instead of polling forever as in_flight."""
+    monkeypatch.setattr(settings, "rate_limit_per_session_per_hour", 0)
+    monkeypatch.setattr(settings, "rate_limit_per_ip_per_hour", 100)
+    await _insert_indexed_document(migrated_session)
+    session_id = await _insert_session(migrated_session)
+    app = _chat_app(migrated_session, FakeRetrievalAgent(None), FakeGenerationClient())
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = await client.post("/api/v1/chat", json={"session_id": str(session_id), "message": "hello"})
+        # Same session, same turn (no user message was stored), so the retry reuses the
+        # idempotency key and lands in the duplicate-wait path.
+        second = await client.post("/api/v1/chat", json={"session_id": str(session_id), "message": "hello"})
+
+    assert first.status_code == 429
+    assert second.status_code == 429
+    assert second.headers["Retry-After"]
 
 
 def _chat_app(session: AsyncSession, retrieval: FakeRetrievalAgent, generation: FakeGenerationClient) -> FastAPI:

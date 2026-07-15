@@ -20,8 +20,13 @@ from app.cache.exact import lookup_exact_cache, write_exact_cache
 from app.cache.exact import CacheHit
 from app.cache.semantic import lookup_semantic_cache, write_semantic_cache
 from app.chat.conversation import load_conversation_context
+from app.chat.evidence_gate import (
+    post_retrieval_decision,
+    pre_retrieval_decision,
+)
 from app.chat.response_presenter import (
     DOCUMENT_PREPARING_MESSAGE,
+    EXTERNAL_FACT_MESSAGE,
     NO_ANSWER_MESSAGE,
     REFERENCES_HEADING,
     RETRIEVAL_UNAVAILABLE_MESSAGE,
@@ -32,6 +37,7 @@ from app.chat.response_presenter import (
     document_display_title,
     present_answer,
 )
+from app.retrieval.query_analysis import analyze_query
 from app.chainlit_steps import chainlit_step
 from app.core.cost import compute_cost
 from app.agents.tracing import record_decision
@@ -164,6 +170,24 @@ async def chat(
             cache_hit.source_chunk_ids,
         )
 
+    # Deterministic evidence gate. An external/current-fact question is refused here,
+    # before any retrieval or generation, so a no-answer is fast and cheap. The analysis
+    # is reused after retrieval for the numeric-evidence check.
+    analysis = analyze_query(payload.message) if settings.evidence_gate_enabled else None
+    if analysis is not None:
+        pre = pre_retrieval_decision(analysis)
+        if pre.refused:
+            return await _finalize_no_answer(
+                db,
+                started,
+                session_id,
+                audit_id,
+                payload.message,
+                EXTERNAL_FACT_MESSAGE,
+                reason=pre.reason,
+                signals=analysis.matched_signals,
+            )
+
     counts = await _document_status_counts(db)
     if counts["indexed"] == 0:
         # A document that is still being prepared is not the same as no document at all.
@@ -241,6 +265,23 @@ async def chat(
         session_id=session_id,
         query_audit_log_id=audit_id,
     )
+
+    # Evidence gate, second point: a numeric question whose retrieved evidence contains no
+    # number at all cannot be answered, so refuse before spending a generation call.
+    if analysis is not None:
+        post = post_retrieval_decision(analysis, payload_for_generation.source_chunks)
+        if post.refused and post.reason == "missing_numeric_evidence":
+            return await _finalize_no_answer(
+                db,
+                started,
+                session_id,
+                audit_id,
+                payload.message,
+                NO_ANSWER_MESSAGE,
+                reason=post.reason,
+                signals=analysis.matched_signals,
+                retrieved_chunk_ids=payload_for_generation.source_chunk_ids,
+            )
 
     _inject_conversation_context(payload_for_generation.messages, conversation.messages)
     generated = await generation_client.generate(payload_for_generation, max_tokens=settings.max_output_tokens_chat)
@@ -425,19 +466,59 @@ async def _claim_audit_row(
     return row["id"]
 
 
+# Finalized attempts that terminate without ever writing an assistant answer. A duplicate
+# of one of these has nothing to replay, so it must surface the terminal error rather than
+# poll forever and fall through to a stale `{"status": "in_flight"}` payload.
+_TERMINAL_FAILURE_STATUSES = {"validation_rejected", "rate_limited"}
+
+
 async def _wait_for_duplicate(db: AsyncSession, session_id: UUID, idempotency_key: str) -> ChatResponse | JSONResponse:
     for _ in range(40):
         completed = await _completed_response_for_key(db, session_id, idempotency_key)
         if completed is not None:
             await db.rollback()
             return completed
+        terminal_status = await _terminal_failure_status(db, idempotency_key)
         await db.rollback()
+        if terminal_status is not None:
+            _raise_terminal_failure(terminal_status)
         await asyncio.sleep(0.25)
     return JSONResponse(
         status_code=202,
         headers={"Retry-After": "2"},
         content={"session_id": str(session_id), "status": "in_flight"},
     )
+
+
+async def _terminal_failure_status(db: AsyncSession, idempotency_key: str) -> str | None:
+    """Return the cache_status if the original attempt failed terminally without an answer."""
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT cache_status, latency_ms
+                FROM query_audit_log
+                WHERE idempotency_key = :idempotency_key
+                """
+            ),
+            {"idempotency_key": idempotency_key},
+        )
+    ).mappings().first()
+    if row is None or row["latency_ms"] is None:
+        return None
+    status = row["cache_status"]
+    return status if status in _TERMINAL_FAILURE_STATUSES else None
+
+
+def _raise_terminal_failure(status: str) -> None:
+    if status == "rate_limited":
+        # The original was rate limited and consumed this turn; the retry is refused the
+        # same way. A full-window retry-after never tells the client to come back too early.
+        raise RateLimitExceededError(
+            "Rate limit exceeded for this client.",
+            settings.rate_limit_window_seconds,
+        )
+    raise ValidationError("This message did not pass input validation.")
 
 
 async def _completed_response_for_key(db: AsyncSession, session_id: UUID, idempotency_key: str) -> ChatResponse | None:
@@ -547,6 +628,61 @@ async def _finalize_no_retrieval(
         citations=[],
         query_audit_log_id=audit_id,
         output_filter_status="passed",
+    )
+
+
+async def _finalize_no_answer(
+    db: AsyncSession,
+    started: float,
+    session_id: UUID,
+    audit_id: UUID,
+    query: str,
+    answer: str,
+    *,
+    reason: str | None,
+    signals: list[str],
+    retrieved_chunk_ids: list[UUID] | None = None,
+) -> ChatResponse:
+    """Schema-stable, non-cacheable no-answer from the evidence gate.
+
+    The machine-readable reason is written to ``agent_trace_log`` (not a new audit column)
+    so a "why did this refuse?" question is answerable without a migration.
+    """
+    await record_decision(
+        db,
+        agent_id="evidence_gate",
+        decision="evidence_no_answer",
+        detail={"reason": reason, "signals": signals},
+        session_id=session_id,
+        query_audit_log_id=audit_id,
+    )
+    await _insert_turn_messages(db, session_id, query, answer, [])
+    await _finalize_audit(
+        db,
+        audit_id=audit_id,
+        cache_status="no_answer",
+        retrieved_chunk_ids=retrieved_chunk_ids or [],
+        reranked=False,
+        retrieval_mode="evidence_gate",
+        generation_model=None,
+        grounded=False,
+        output_filter_status="passed",
+        output_filter_reason=reason,
+        latency_ms=_latency(started),
+        token_input=0,
+        token_output=0,
+        cost_usd=Decimal("0"),
+    )
+    await db.commit()
+    return ChatResponse(
+        session_id=session_id,
+        answer=answer,
+        cache_status="no_answer",
+        source_chunk_ids=[],
+        citations=[],
+        query_audit_log_id=audit_id,
+        output_filter_status="passed",
+        output_filter_reason=reason,
     )
 
 

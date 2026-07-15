@@ -87,6 +87,12 @@ class Settings(BaseSettings):
     # A factual answer with no surviving citation cannot be shown as grounded; it is
     # converted to the concise no-answer instead.
     require_sentence_citations: bool = True
+    # Deterministic evidence-sufficiency gate: refuse external/current-fact questions
+    # before retrieval, and numeric questions whose retrieved evidence holds no number,
+    # so a no-answer is fast and cheap instead of a slow round-trip. Conservative by
+    # construction (see app/chat/evidence_gate.py); can be disabled to fall back to
+    # generation-time refusal only.
+    evidence_gate_enabled: bool = True
     # The judge is pinned to Anthropic Opus by policy, NOT routed by the cost optimizer.
     # A grader must be stable and high-quality across runs, or score trends measure the
     # judge's drift rather than the system's. Local runs override this to Gemini via .env

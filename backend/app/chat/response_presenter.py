@@ -30,6 +30,12 @@ NO_ANSWER_MESSAGE = (
     "Try uploading the document that covers it, or ask about a specific section."
 )
 RETRIEVAL_UNAVAILABLE_MESSAGE = "I could not search your documents right now. Please try again."
+# The question asks for current or outside-world information a fixed set of uploaded PDFs
+# cannot hold. Refused fast and without a citation, because there is nothing to cite.
+EXTERNAL_FACT_MESSAGE = (
+    "I can only answer from your uploaded documents, and this looks like it needs "
+    "current or outside information they do not contain."
+)
 # Nothing has been uploaded yet, so there is nothing to answer from. Ask, do not scold.
 UPLOAD_FIRST_MESSAGE = (
     "I do not have any documents to look in yet. "
