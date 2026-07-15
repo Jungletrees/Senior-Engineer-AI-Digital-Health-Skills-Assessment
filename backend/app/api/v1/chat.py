@@ -284,7 +284,26 @@ async def chat(
             )
 
     _inject_conversation_context(payload_for_generation.messages, conversation.messages)
-    generated = await generation_client.generate(payload_for_generation, max_tokens=settings.max_output_tokens_chat)
+    try:
+        generated = await generation_client.generate(payload_for_generation, max_tokens=settings.max_output_tokens_chat)
+    except Exception:
+        # Retrieval succeeded but the generation provider failed (timeout, 5xx, transport).
+        # Return a schema-stable safe response and never cache it, rather than surfacing a
+        # 500 or a partial payload to the client.
+        await db.rollback()
+        return await _finalize_no_answer(
+            db,
+            started,
+            session_id,
+            audit_id,
+            payload.message,
+            RETRIEVAL_UNAVAILABLE_MESSAGE,
+            reason="provider_unavailable",
+            retrieved_chunk_ids=payload_for_generation.source_chunk_ids,
+            agent_id="orchestrator",
+            decision="generation_provider_failed",
+            retrieval_mode="provider_error",
+        )
 
     presentation = await _present(
         generated.answer,
@@ -476,12 +495,16 @@ async def _wait_for_duplicate(db: AsyncSession, session_id: UUID, idempotency_ke
     for _ in range(40):
         completed = await _completed_response_for_key(db, session_id, idempotency_key)
         if completed is not None:
-            await db.rollback()
+            await db.close()
             return completed
         terminal_status = await _terminal_failure_status(db, idempotency_key)
-        await db.rollback()
         if terminal_status is not None:
+            await db.close()
             _raise_terminal_failure(terminal_status)
+        # Release the pooled connection for the duration of the sleep. A burst of duplicate
+        # polls must not each pin a connection while doing nothing; the next iteration's
+        # query re-acquires one. Without this, N concurrent retries hold N idle connections.
+        await db.close()
         await asyncio.sleep(0.25)
     return JSONResponse(
         status_code=202,
@@ -640,19 +663,23 @@ async def _finalize_no_answer(
     answer: str,
     *,
     reason: str | None,
-    signals: list[str],
+    signals: list[str] | None = None,
     retrieved_chunk_ids: list[UUID] | None = None,
+    agent_id: str = "evidence_gate",
+    decision: str = "evidence_no_answer",
+    retrieval_mode: str = "evidence_gate",
 ) -> ChatResponse:
-    """Schema-stable, non-cacheable no-answer from the evidence gate.
+    """Schema-stable, non-cacheable no-answer (evidence gate or provider failure).
 
     The machine-readable reason is written to ``agent_trace_log`` (not a new audit column)
-    so a "why did this refuse?" question is answerable without a migration.
+    so a "why did this refuse?" question is answerable without a migration. Nothing is
+    written to the caches here, so a refusal or a provider failure is never reused.
     """
     await record_decision(
         db,
-        agent_id="evidence_gate",
-        decision="evidence_no_answer",
-        detail={"reason": reason, "signals": signals},
+        agent_id=agent_id,
+        decision=decision,
+        detail={"reason": reason, "signals": signals or []},
         session_id=session_id,
         query_audit_log_id=audit_id,
     )
@@ -663,7 +690,7 @@ async def _finalize_no_answer(
         cache_status="no_answer",
         retrieved_chunk_ids=retrieved_chunk_ids or [],
         reranked=False,
-        retrieval_mode="evidence_gate",
+        retrieval_mode=retrieval_mode,
         generation_model=None,
         grounded=False,
         output_filter_status="passed",

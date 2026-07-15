@@ -50,9 +50,11 @@ class FakeGenerationClient:
         self,
         answer: str = "Malaria treatment includes clinic follow up.[cite:1]",
         delay: float = 0.0,
+        raises: bool = False,
     ) -> None:
         self.answer = answer
         self.delay = delay
+        self.raises = raises
         self.calls = 0
         self.summary_calls = 0
 
@@ -60,6 +62,8 @@ class FakeGenerationClient:
         self.calls += 1
         if self.delay:
             await asyncio.sleep(self.delay)
+        if self.raises:
+            raise RuntimeError("simulated provider failure")
         return GenerationResult(self.answer, payload.model, 10, 6, 0.0)
 
     async def summarize(self, messages: list[dict[str, str]], max_tokens: int) -> str:
@@ -483,6 +487,30 @@ async def test_numeric_question_without_numeric_evidence_refuses_before_generati
     # Retrieval ran (needed to inspect evidence) but generation was skipped.
     assert retrieval.calls == 1
     assert generation.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_generation_provider_failure_returns_stable_uncached_response(
+    migrated_session: AsyncSession,
+) -> None:
+    """Retrieval succeeded but generation failed: schema-stable, safe, and non-cacheable."""
+    document_id = await _insert_indexed_document(migrated_session)
+    session_id = await _insert_session(migrated_session)
+    generation = FakeGenerationClient(raises=True)
+    app = _chat_app(migrated_session, FakeRetrievalAgent(_candidate(document_id)), generation)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post("/api/v1/chat", json={"session_id": str(session_id), "message": "malaria"})
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["answer"] == RETRIEVAL_UNAVAILABLE_MESSAGE
+    assert payload["cache_status"] == "no_answer"
+    assert payload["citations"] == []
+    assert payload["output_filter_reason"] == "provider_unavailable"
+    assert generation.calls == 1
+    # A provider failure must never be cached as an answer.
+    assert await lookup_exact_cache(migrated_session, "malaria") is None
 
 
 @pytest.mark.asyncio
