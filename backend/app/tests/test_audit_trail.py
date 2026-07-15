@@ -206,3 +206,39 @@ async def _indexed_document(session: AsyncSession):
     ).mappings().one()
     await session.commit()
     return row["id"]
+
+
+@pytest.mark.asyncio
+async def test_a_failed_trace_write_does_not_poison_the_caller_transaction(db_session) -> None:
+    """record_decision runs inside the caller's transaction and is best-effort.
+
+    If its INSERT fails (a deadlock under concurrent ingestion, say), catching the Python
+    exception is not enough — the failed statement aborts the whole outer transaction, and
+    the caller's next statement dies with InFailedSQLTransactionError. The savepoint scopes
+    the failure so the outer transaction survives. This test forces the insert to fail and
+    asserts the session can still do real work afterwards.
+    """
+    from app.agents.tracing import record_decision
+
+    # A document_id that violates the FK forces the trace INSERT to fail.
+    await record_decision(
+        db_session,
+        agent_id="ingestion_agent",
+        decision="chunk_strategy_selected",
+        detail={"chunk_strategy": "fixed_size"},
+        document_id=uuid4(),  # no such document -> FK violation inside the savepoint
+    )
+
+    # The outer transaction must still be usable. Before the savepoint fix this raised
+    # InFailedSQLTransactionError.
+    ok = (await db_session.execute(text("SELECT 1"))).scalar_one()
+    assert ok == 1
+
+    # And a real insert still commits.
+    document_id = await _indexed_document(db_session)
+    count = (
+        await db_session.execute(
+            text("SELECT count(*) FROM documents WHERE id = :id"), {"id": document_id}
+        )
+    ).scalar_one()
+    assert count == 1

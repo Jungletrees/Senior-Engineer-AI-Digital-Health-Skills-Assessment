@@ -155,37 +155,47 @@ async def record_decision(
 
     Tracing must never take down a request: a failure to write an audit row is logged and
     swallowed, because losing observability is strictly better than losing the answer.
+
+    The write runs inside a SAVEPOINT, and that is load-bearing, not defensive dressing.
+    This runs inside the caller's transaction (the ingestion or chat transaction). When
+    several documents ingest at once, concurrent inserts into `agent_trace_log` can
+    deadlock — Postgres kills one. Catching the Python exception is not enough: the killed
+    statement leaves the *whole outer transaction* aborted, so the caller's very next
+    statement fails with InFailedSQLTransactionError and the real work is lost to a dropped
+    audit row. `begin_nested()` scopes the failure to the savepoint, which rolls back on its
+    own, leaving the outer transaction healthy to finish the ingestion.
     """
     if not settings.agent_trace_logging_enabled or db is None:
         return
     try:
-        await db.execute(
-            text(
-                """
-                INSERT INTO agent_trace_log (
-                    agent_name, agent_id, tool_name, event_type,
-                    input, output, score,
-                    session_id, query_audit_log_id, document_id
-                )
-                VALUES (
-                    :agent_name, :agent_id, :decision, :event_type,
-                    CAST(:input AS jsonb), CAST(:output AS jsonb), :score,
-                    :session_id, :query_audit_log_id, :document_id
-                )
-                """
-            ),
-            {
-                "agent_name": agent_id,
-                "agent_id": agent_id,
-                "decision": decision,
-                "event_type": "score" if score is not None else "decision",
-                "input": json.dumps({"decision": decision}),
-                "output": json.dumps(_redact(detail)),
-                "score": score,
-                "session_id": session_id,
-                "query_audit_log_id": query_audit_log_id,
-                "document_id": document_id,
-            },
-        )
+        async with db.begin_nested():
+            await db.execute(
+                text(
+                    """
+                    INSERT INTO agent_trace_log (
+                        agent_name, agent_id, tool_name, event_type,
+                        input, output, score,
+                        session_id, query_audit_log_id, document_id
+                    )
+                    VALUES (
+                        :agent_name, :agent_id, :decision, :event_type,
+                        CAST(:input AS jsonb), CAST(:output AS jsonb), :score,
+                        :session_id, :query_audit_log_id, :document_id
+                    )
+                    """
+                ),
+                {
+                    "agent_name": agent_id,
+                    "agent_id": agent_id,
+                    "decision": decision,
+                    "event_type": "score" if score is not None else "decision",
+                    "input": json.dumps({"decision": decision}),
+                    "output": json.dumps(_redact(detail)),
+                    "score": score,
+                    "session_id": session_id,
+                    "query_audit_log_id": query_audit_log_id,
+                    "document_id": document_id,
+                },
+            )
     except Exception as exc:  # pragma: no cover - observability must not break the request
         logger.warning("trace.decision_write_failed agent_id=%s error=%s", agent_id, exc)
