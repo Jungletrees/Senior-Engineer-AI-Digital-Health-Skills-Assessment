@@ -110,6 +110,78 @@ Cost controls:
 - Keep WAF and application rate limits active; tune per-IP/session limits from observed traffic.
 - Build CloudWatch dashboards for p95 latency, 5xx rate, cache hit rate, grounding failures, cost, anomaly flags, and gold-eval score trends.
 
+## Hardening From Observed Test Behavior
+
+Concrete issues surfaced while indexing the stress corpus and running the deterministic
+suite on the local stack, with the production refinement for each. These are measured, not
+hypothetical, and refine the plan across scalability, reliability, performance,
+observability, traceability, and cost-per-request.
+
+**Performance / latency (measured).** With the free-tier Gemini embedding key, a
+16-page / 582-chunk PDF took **~566 s (~9.4 min)** to reach `indexed`, while 1-page docs
+finished in seconds — the time is client-side pacing and free-tier `429`/backoff, not CPU
+(ARCHITECTURE §7.7). *Refinement:* production must not embed on a free tier — set
+`EMBEDDING_REQUESTS_PER_MINUTE=0`, raise `EMBEDDING_BATCH_LIMIT` toward 100, or use
+`text-embedding-3-small` (1536-dim, no re-index). Async ingestion already keeps the upload
+response fast; embedding reuse keyed on `chunks.content_hash` avoids re-paying for identical
+text. A dimension change is a re-index, not a config flip.
+
+**Concurrency (observed).** Ingestion runs as an in-process FastAPI background task that
+performs synchronous PDF parse / rasterize / OCR / embed work on the async event loop, so a
+large ingestion pins a uvicorn worker; during one such run, concurrent document-status polls
+saw connection resets (`RemoteDisconnected`). *Refinement:* (1) move ingestion to
+`S3 event → SQS → dedicated ECS/Lambda worker` (the document status guard is already
+idempotent enough — see Known Gaps); (2) until then, run CPU-bound steps in a threadpool
+(`run_in_executor`) and cap concurrent ingestions per task; (3) size gunicorn workers so one
+long ingestion cannot starve `/chat`.
+
+**DB reliability (observed; two fixes landed).**
+- *Ephemeral storage orphaned documents.* Uploaded PDFs and page images lived on the
+  container's writable layer while their `documents`/`chunks` rows lived in the DB volume, so
+  a container recreate wiped the files but kept the rows — leaving documents that report
+  `indexed` with no source file, which fails ingestion/re-ingestion/page-image fetch. Fixed
+  locally with named volumes; **production must set `UPLOAD_STORAGE_BACKEND=s3` and
+  `PAGE_IMAGE_STORAGE_BACKEND=s3`** (already required here). Add a reconciliation job that
+  flags a document `failed`/re-queues it when its `storage_ref` is missing, so a lost file
+  can never masquerade as `indexed`.
+- *Idempotency polling held a connection while sleeping.* The duplicate-request wait loop now
+  releases its pooled connection between polls, so a burst of retries no longer pins one idle
+  connection each. Under Lambda, front RDS with **RDS Proxy** and keep retry polling
+  connection-light; the pool is `pool_size=10 / max_overflow=20` per task.
+- *Tests share the database.* The deterministic pytest fixtures `alembic downgrade base`
+  between runs, which will wipe any data in the target database (this session's run wiped a
+  live corpus). **CI must point `DATABASE_URL` at an isolated throwaway test database**, never
+  a shared or live one, and always `alembic upgrade head` afterward to restore schema.
+
+**Reliability (added this cycle).** The evidence gate returns fast, schema-stable, uncited
+no-answers for external/current-fact and missing-numeric-evidence questions; a generation
+provider failure after retrieval returns a schema-stable, **non-cacheable** safe response
+instead of a 5xx; a duplicate of a terminally failed attempt re-raises its terminal error
+instead of looping as `in_flight`; IP-dimension rate-limit `Retry-After` is computed from the
+IP window. *Refinement:* add provider-call timeouts, jittered backoff, and a circuit breaker
+at the generation client so a provider brownout degrades to safe no-answers rather than
+piling up latency.
+
+**Observability (observed gap).** Application `INFO` logs — ingestion and retrieval progress
+— were invisible because the gunicorn runtime's root logger sits at `WARNING`; only `ERROR`
+surfaced, which is why a stalled ingestion looked silent. *Refinement:* set the app log level
+to `INFO` with structured (JSON) output shipped to CloudWatch, and record latency **by
+stage** (retrieval, rerank, generation, presentation, cache write) — `query_audit_log`
+already has `latency_ms` and the stage hooks exist.
+
+**Traceability.** `agent_trace_log` already records the router choice, retrieval confidence,
+chunking strategy, and now the evidence-gate no-answer `reason` + `signals`;
+`query_audit_log` ties a request to its `cache_status`, `retrieval_mode`, `grounded`, tokens,
+and cost. *Refinement:* propagate an `X-Request-Id` / trace id from the ALB through both
+tables (and structured logs) so a single request replays end-to-end across logs and traces.
+
+**Cost per request (tracking).** `query_audit_log.cost_usd` / `token_input` / `token_output`
+/ `cost_category`, computed from `MODEL_PRICING_JSON`, plus the `agentops_summary` view,
+already give per-request cost. *Refinement:* add a dashboard panel for cost-per-request by
+model and `cache_status` (an exact-cache hit is $0 tokens), an optional per-request/per-actor
+budget guard, and AWS Budgets anomaly alarms. Verify `MODEL_PRICING_JSON` at deploy time so
+cost figures are not stale.
+
 ## Security
 
 - No hardcoded secrets. `.env` stays local and ignored; production secrets are injected from Secrets Manager or SSM.
@@ -267,9 +339,10 @@ Named rather than hidden, since none of this is deployed yet:
 
 1. No IaC exists. Terraform (or CDK) for VPC, RDS, ECS, S3, IAM, Secrets Manager, ALB/WAF, and CloudWatch is the first build task.
 2. No `.github/workflows/`. The pipeline above is a design, not a running system.
-3. Ingestion is a FastAPI background task, not a durable queue. A restart mid-ingestion strands a document in `processing`. Replacing it with S3-event → SQS → worker is the first production-hardening change, and the document status guard is already idempotent enough to support it.
+3. Ingestion is a FastAPI background task, not a durable queue. A restart mid-ingestion strands a document in `processing`, and its synchronous parse/OCR/embed work blocks the async event loop (observed: concurrent status polls reset during a large ingestion). Replacing it with S3-event → SQS → worker is the first production-hardening change, and the document status guard is already idempotent enough to support it. Local uploads/page-images now persist across container recreation via named volumes (`uploads_volume`, `page_images_volume`); production uses `UPLOAD_STORAGE_BACKEND=s3`. Add a reconciliation job that fails/re-queues a document whose `storage_ref` is missing.
 4. Gold-eval score floors are not trustworthy until the corpus is fetched, checksum-pinned, indexed, and expected answers are human-verified.
 5. A clean-clone reproducibility run has not been performed.
+6. CI must run pytest against an **isolated** database: the deterministic fixtures `alembic downgrade base` between runs and will wipe whatever `DATABASE_URL` points at. Point CI at a throwaway test DB and `alembic upgrade head` afterward.
 
 ## Migration and Data Strategy
 

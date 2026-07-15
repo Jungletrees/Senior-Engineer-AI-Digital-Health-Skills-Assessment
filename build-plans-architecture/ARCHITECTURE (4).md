@@ -543,6 +543,29 @@ The generation call is structured so every claim traces to a retrieved chunk; th
 
 The golden-set eval (§11.2) now also reports precision@K split by `retrieval_mode` (`deterministic` vs `agentic_expanded`) — this is what would justify (or disprove) the gating threshold's default value, per the honest caveat in §15.3.
 
+### 7.7 Embedding throughput, latency, and production model options — new
+
+**Measured on the local test stack** (free-tier Gemini `gemini-embedding-001`, `EMBEDDING_REQUESTS_PER_MINUTE=70`, `EMBEDDING_BATCH_LIMIT=40`):
+
+| Document | Pages | Chunks | Wall-clock to `indexed` |
+|---|---:|---:|---:|
+| Chevron sustainability page | 1 | 9 | seconds |
+| Lorem Ipsum | 1 | 34 | seconds |
+| LayoutParser paper | 16 | 582 | **~566 s (~9.4 min)** |
+
+The time is dominated by client-side pacing and free-tier `429`/backoff (`_gemini_post_with_retry` in `documents/chunking.py`), **not** CPU. The free tier caps requests/minute and counts every item in a `batchEmbedContents` call as one request, so a large document's many embedding batches serialize behind the per-minute quota and each `429` triggers exponential backoff up to ~2 minutes. Small documents finish inside one quota window; a large one waits out several. This is a **test-key limitation, not a system limit** — and it is why a large upload can sit in `processing` for minutes on a free key.
+
+**Production recommendations (improve both latency and retrieval quality):**
+
+1. **Do not embed on a free tier.** On a paid Gemini tier set `EMBEDDING_REQUESTS_PER_MINUTE=0` (disables client pacing) and raise `EMBEDDING_BATCH_LIMIT` toward 100 — ingestion becomes provider-limited rather than quota-paced, and the 16-page paper indexes in seconds instead of ~9 minutes.
+2. **Model options, all pluggable via `EMBEDDING_MODEL` (routing in §15):**
+   - `text-embedding-3-small` (OpenAI, **1536-dim native**): fast, high throughput, strong quality — the balanced production default; no dimension change or re-index.
+   - `voyage-3` / `voyage-3-large` (Voyage; pairs naturally with Claude generation): top retrieval recall; both need `EMBEDDING_DIM` set to their dimension and a re-index.
+   - `text-embedding-3-large` (OpenAI): higher recall than 3-small; native 3072-dim needs `EMBEDDING_DIM=3072` + re-index, or request a reduced (Matryoshka) dimension to stay at 1536.
+3. **Dimension is a hard constraint.** The pgvector column is fixed at `EMBEDDING_DIM` (1536). Changing the embedding model or its dimension is a **re-index, not a config flip** (flagged in `.env.example`); `semantic_cache.embedding_model` scoping (§9.2, migration 0016) prevents comparing vectors across models during the transition.
+4. **Latency levers independent of the model** (already in place): embedding reuse keyed by `chunks.content_hash` avoids re-embedding identical text across uploads/sessions; ingestion runs as an async background task so upload-response latency is unaffected; batching is already used.
+5. **Validate before switching.** Retrieval recall is measured, not assumed (§7.6): a stronger embedding model plus the existing cross-encoder rerank should be checked against golden-set precision@K before adoption, since a higher-dimensional model also costs more per token and per index byte.
+
 ---
 
 ## 8. Conversation Context Management — unchanged

@@ -422,5 +422,29 @@
     },
     "signals": "No 429 or 500 on the OOS evidence-gate path; refusals were fast (~1.4s), uncited, schema-stable, and reason-traced — directly addressing the report's biggest failing category (OOS 0/25) and the in_flight/slow-no-answer artifacts. Full-corpus SYN/NUM/INF recall could not be measured live because ingestion did not complete; the query analyzer's document-aware groundwork (resolve_document_ids) and the numeric-evidence gate are covered by deterministic tests.",
     "full_stress_rerun": "Intentionally skipped per RAG-stress-validation-engineer skill; not warranted until ingestion completes and targeted SYN/NUM/INF samples can be measured."
+  },
+  {
+    "from_agent": "backend-ml-test-agents",
+    "to_agent": "orchestrator",
+    "cycle_id": "RAG_STRESS_CORRECTIVES_FOLLOWUP",
+    "status": "ingestion_unblocked_stress_measured_reliability_hardened",
+    "branch": "codex/rag-precision-evidence-reliability-correctives",
+    "ingestion_loophole": "ROOT CAUSE: app/uploads and page_images were on the container's ephemeral writable layer with no volume; the earlier image --build recreate wiped every uploaded PDF while documents/chunks rows survived in db_volume, so ingestion failed at file-load ('Uploaded PDF not found') and marked docs failed. FIX: docker-compose.yaml now mounts uploads_volume + page_images_volume. PROVEN: files survived a subsequent backend recreate (2 before -> 2 after; previously wiped to 0). Production path is UPLOAD_STORAGE_BACKEND=s3 (already documented).",
+    "reliability_additions_this_session": [
+      "Generation provider failure after retrieval -> schema-stable, non-cacheable safe response (RETRIEVAL_UNAVAILABLE_MESSAGE, reason=provider_unavailable) instead of a 5xx. Tested.",
+      "Duplicate-poll loop now releases its pooled DB connection during sleep (db.close() between polls) so a burst of retries does not pin N idle connections.",
+      "_finalize_no_answer generalized to carry agent_id/decision/retrieval_mode for both evidence-gate and provider-failure paths."
+    ],
+    "embedding_speed_measured": "Free-tier Gemini gemini-embedding-001 (70 req/min, batch 40): 1-page docs index in seconds; the 16-page/582-chunk LayoutParser paper took ~566s (~9.4 min), dominated by free-tier 429/backoff pacing, not CPU. Documented in ARCHITECTURE (4).md §7.7 and .env.example with production model/pacing recommendations (paid tier + EMBEDDING_REQUESTS_PER_MINUTE=0 + EMBEDDING_BATCH_LIMIT=100, or text-embedding-3-small / voyage-3 with the re-index caveat).",
+    "targeted_stress_full_corpus": {
+      "command": "scripts/rag_stress_benchmark.py --skip-upload --rotate-client-ip on the fully indexed corpus (chevron 9 + loremipsum 34 + layoutparser 582 = 625 chunks)",
+      "reliability": "No 429, no 5xx, no in_flight across all 12 ids.",
+      "Out-of-Scope": "3/3 = 100% (OOS-08 + OOS-25 fast external-fact refusal; OOS-21 attribute-absent no-answer). Was 0/25 in the original full run.",
+      "NUM-04": "PASS 100% ('LayoutParser requires four lines of code...' cited pages 5 and 4) - known-good regression guard holds.",
+      "SYN_NUM_INF_gap": "SYN 0/4, INF 0/2, NUM(non-04) mostly no-answer. Root cause is the flat retrieval pool being dominated by the 582 LayoutParser chunks, starving Chevron and cross-document coverage - exactly the DEFERRED Phase-3 document-aware retrieval quotas. My slice intentionally does not change retrieval, so these are expected and now data-motivated."
+    },
+    "deployment_doc": "DEPLOYMENT.md gained a 'Hardening From Observed Test Behavior' section refining the plan across performance/latency, concurrency (event-loop-blocking ingestion), DB reliability (ephemeral storage, connection-during-sleep, test-DB isolation), reliability, observability (suppressed INFO logs), traceability, and cost-per-request.",
+    "deterministic_verification": "Full backend hermetic pytest (provider keys cleared): 255 passed / 12 skipped with committed code; changed-suites with the new provider-failure + connection changes: 24 passed; unit suites 26 passed. Final full-suite re-run with the new changes in progress at handoff.",
+    "deferred_followups_data_backed": "Phase 2 (chunk metadata/tags/content_kind + document inventory + sparse-visual OCR) and Phase 3 (per-document retrieval quotas, metadata-filtered pools, bounded recovery). The stress sample now shows Phase 3 is the highest-value next step for SYN/NUM/INF; the query analyzer (analyze_query + resolve_document_ids) already provides the intent + document-alias signals a quota-aware retriever needs."
   }
 ]
