@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import math
 import os
@@ -52,6 +53,7 @@ class PreparedChunk:
     section_path: str | None
     page_number: int | None
     token_count: int
+    block_type: str = "paragraph"
 
 
 @dataclass(slots=True)
@@ -380,14 +382,14 @@ def chunk_structured_blocks(
 
         if block.block_type == "table":
             chunk_content = f"{prefix}{content}".strip()
-            chunks.append(_build_chunk(len(chunks), chunk_content, section_path, block.page_number))
+            chunks.append(_build_chunk(len(chunks), chunk_content, section_path, block.page_number, "table"))
             continue
 
         prefix_token_count = count_tokens(prefix)
         body_limit = max(1, chunk_size - prefix_token_count)
         for window in _sliding_token_windows(content, body_limit, overlap_tokens):
             chunk_content = f"{prefix}{window}".strip()
-            chunks.append(_build_chunk(len(chunks), chunk_content, section_path, block.page_number))
+            chunks.append(_build_chunk(len(chunks), chunk_content, section_path, block.page_number, "paragraph"))
 
     return chunks
 
@@ -518,9 +520,25 @@ async def prepare_and_persist_document_chunks(
         embeddings, expected_count=len(chunks), expected_dim=get_embedding_dim()
     )
 
+    # Deterministic chunk metadata for retrieval precision (additive; content unchanged).
+    from app.documents.chunk_metadata import build_chunk_metadata, infer_document_type
+
+    title = _document_title(document.filename)
+    document_type = infer_document_type(document.filename)
+    low_yield_pages = _low_yield_page_numbers(page_assessments)
+
     logger.info("chunks.db.transaction.start document_id=%s", document.id)
     await db.execute(delete(Chunk).where(Chunk.document_id == document.id))
     for chunk, embedding in zip(chunks, embeddings, strict=True):
+        meta = build_chunk_metadata(
+            title=title,
+            document_type=document_type,
+            page_number=chunk.page_number,
+            section_path=chunk.section_path,
+            content=chunk.content,
+            block_type=chunk.block_type,
+            low_yield_page=chunk.page_number in low_yield_pages,
+        )
         await db.execute(
             text(
                 """
@@ -533,7 +551,12 @@ async def prepare_and_persist_document_chunks(
                     page_number,
                     token_count,
                     embedding,
-                    embedding_model
+                    embedding_model,
+                    content_kind,
+                    theme_tags,
+                    entity_tags,
+                    metric_tags,
+                    metadata
                 )
                 VALUES (
                     :document_id,
@@ -544,7 +567,12 @@ async def prepare_and_persist_document_chunks(
                     :page_number,
                     :token_count,
                     CAST(:embedding AS vector),
-                    :embedding_model
+                    :embedding_model,
+                    :content_kind,
+                    :theme_tags,
+                    :entity_tags,
+                    :metric_tags,
+                    CAST(:metadata AS jsonb)
                 )
                 """
             ),
@@ -558,15 +586,52 @@ async def prepare_and_persist_document_chunks(
                 "token_count": chunk.token_count,
                 "embedding": _vector_literal(embedding),
                 "embedding_model": get_embedding_model(),
+                "content_kind": meta["content_kind"],
+                "theme_tags": meta["theme_tags"],
+                "entity_tags": meta["entity_tags"],
+                "metric_tags": meta["metric_tags"],
+                "metadata": json.dumps(meta["metadata"]),
             },
         )
     logger.info("chunks.db.transaction.prepared document_id=%s rows=%s", document.id, len(chunks))
+
+    # Document inventory (structure/count facts) — one row per document.
+    from app.documents.document_inventory import build_and_persist_inventory
+
+    await build_and_persist_inventory(
+        db,
+        document=document,
+        title=title,
+        document_type=document_type,
+        blocks=blocks,
+        chunks=chunks,
+        page_assessments=page_assessments,
+    )
 
     return ChunkingSummary(
         chunk_count=len(chunks),
         embedding_count=len(embeddings),
         embedding_model=get_embedding_model(),
     )
+
+
+def _document_title(filename: str) -> str:
+    from app.chat.response_presenter import document_display_title
+
+    return document_display_title(filename)
+
+
+def _low_yield_page_numbers(page_assessments: list[Any] | None) -> set[int]:
+    if not page_assessments:
+        return set()
+    pages: set[int] = set()
+    for assessment in page_assessments:
+        if getattr(assessment, "extraction_confidence", None) == "low_yield_needs_ocr":
+            try:
+                pages.add(int(getattr(assessment, "page_number")))
+            except (TypeError, ValueError):
+                continue
+    return pages
 
 
 def structured_blocks_from_page_assessments(page_assessments: list[Any]) -> list[StructuredBlock]:
@@ -658,6 +723,7 @@ def _build_chunk(
     content: str,
     section_path: str | None,
     page_number: int | None,
+    block_type: str = "paragraph",
 ) -> PreparedChunk:
     return PreparedChunk(
         chunk_index=index,
@@ -666,6 +732,7 @@ def _build_chunk(
         section_path=section_path,
         page_number=page_number,
         token_count=count_tokens(content),
+        block_type=block_type,
     )
 
 

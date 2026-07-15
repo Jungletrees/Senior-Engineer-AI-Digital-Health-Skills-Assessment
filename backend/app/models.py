@@ -106,6 +106,16 @@ class Chunk(Base):
     token_count: Mapped[int | None] = mapped_column(Integer)
     embedding: Mapped[object | None] = mapped_column(Vector(1536))
     embedding_model: Mapped[str] = mapped_column(Text, nullable=False)
+    # Additive retrieval metadata (migration 0017). Raw `content` above is unchanged so
+    # citations still resolve to truthful source text; these enrich retrieval only.
+    # Mapped as ``metadata_`` to avoid clashing with SQLAlchemy's ``Base.metadata``.
+    metadata_: Mapped[dict[str, Any]] = mapped_column(
+        "metadata", JSONB, nullable=False, server_default=text("'{}'::jsonb")
+    )
+    theme_tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    entity_tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    metric_tags: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    content_kind: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
     document: Mapped[Document] = relationship(back_populates="chunks")
@@ -114,6 +124,11 @@ class Chunk(Base):
         Index("chunks_embedding_hnsw_idx", "embedding", postgresql_using="hnsw", postgresql_ops={"embedding": "vector_cosine_ops"}),
         Index("chunks_tsv_idx", "content_tsv", postgresql_using="gin"),
         Index("chunks_document_id_idx", "document_id"),
+        Index("chunks_metadata_gin_idx", "metadata", postgresql_using="gin"),
+        Index("chunks_theme_tags_gin_idx", "theme_tags", postgresql_using="gin"),
+        Index("chunks_entity_tags_gin_idx", "entity_tags", postgresql_using="gin"),
+        Index("chunks_metric_tags_gin_idx", "metric_tags", postgresql_using="gin"),
+        Index("chunks_content_kind_idx", "content_kind", postgresql_where=text("content_kind IS NOT NULL")),
     )
 
 
@@ -137,6 +152,43 @@ class PageImage(Base):
     __table_args__ = (
         UniqueConstraint("document_id", "page_number", name="uq_page_images_document_id_page_number"),
         Index("page_images_document_id_idx", "document_id"),
+    )
+
+
+class DocumentInventory(Base):
+    """One-row-per-document structured fact index (migration 0018).
+
+    Answers document-structure questions (author/reference/table/figure/page counts,
+    "which document contains X") from persisted facts instead of semantic chunk search.
+    Populated deterministically during ingestion.
+    """
+
+    __tablename__ = "document_inventory"
+
+    id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid())
+    document_id: Mapped[UUID] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+    )
+    title: Mapped[str | None] = mapped_column(Text)
+    document_type: Mapped[str | None] = mapped_column(Text)
+    page_count: Mapped[int | None] = mapped_column(Integer)
+    authors: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    author_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    organizations: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    section_headings: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    table_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    figure_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    reference_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    dates: Mapped[list[str]] = mapped_column(ARRAY(Text), nullable=False, server_default=text("'{}'"))
+    numeric_facts: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        Index("document_inventory_document_id_idx", "document_id"),
+        Index("document_inventory_numeric_facts_gin_idx", "numeric_facts", postgresql_using="gin"),
     )
 
 
