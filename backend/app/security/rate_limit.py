@@ -27,13 +27,17 @@ def get_client_ip(request: Request) -> str:
 
 
 async def enforce_chat_rate_limit(db: AsyncSession, session_id: UUID, client_ip: str) -> None:
-    retry_after = await _retry_after_for_session(db, session_id)
     session_count = await _count_session_rows(db, session_id)
     if session_count > settings.rate_limit_per_session_per_hour:
+        retry_after = await _retry_after_for_session(db, session_id)
         raise RateLimitExceededError("Rate limit exceeded for this chat session.", retry_after)
 
     ip_count = await _count_ip_rows(db, client_ip)
     if ip_count > settings.rate_limit_per_ip_per_hour:
+        # Retry-after for an IP breach must be computed from the IP's own window, not the
+        # session's. A fresh session sharing a saturated IP has no session rows, so the old
+        # session-based value returned the full window instead of the true wait.
+        retry_after = await _retry_after_for_ip(db, client_ip)
         raise RateLimitExceededError("Rate limit exceeded for this client IP.", retry_after)
 
 
@@ -87,6 +91,26 @@ async def _retry_after_for_session(db: AsyncSession, session_id: UUID) -> int:
                 """
             ),
             {"session_id": session_id, "window_seconds": settings.rate_limit_window_seconds},
+        )
+    ).mappings().one()
+    return max(int(row["retry_after"] or settings.rate_limit_window_seconds), 1)
+
+
+async def _retry_after_for_ip(db: AsyncSession, client_ip: str) -> int:
+    """Seconds until the oldest request in this IP's window ages out."""
+    row = (
+        await db.execute(
+            text(
+                """
+                SELECT EXTRACT(EPOCH FROM (
+                    min(created_at) + (:window_seconds * interval '1 second') - now()
+                ))::int AS retry_after
+                FROM query_audit_log
+                WHERE client_ip = CAST(:client_ip AS inet)
+                  AND created_at > now() - (:window_seconds * interval '1 second')
+                """
+            ),
+            {"client_ip": client_ip, "window_seconds": settings.rate_limit_window_seconds},
         )
     ).mappings().one()
     return max(int(row["retry_after"] or settings.rate_limit_window_seconds), 1)

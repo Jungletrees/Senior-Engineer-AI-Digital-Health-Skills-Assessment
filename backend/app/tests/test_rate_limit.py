@@ -111,6 +111,36 @@ async def test_rate_limiting_happens_before_cache_lookup(migrated_session: Async
     assert response.status_code == 429
 
 
+@pytest.mark.asyncio
+async def test_ip_limit_retry_after_is_computed_from_ip_window_not_session(
+    migrated_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh session hitting a saturated IP gets a retry-after from the IP's own window.
+
+    The oldest IP request is seeded 100s into a 3600s window, so the correct IP-based
+    retry-after is ~3500s. The old session-based calculation had no session rows to read
+    and fell back to the full 3600s window, so any value strictly under the window proves
+    the retry-after now reflects the IP dimension that actually limited the request.
+    """
+    monkeypatch.setattr(settings, "rate_limit_per_session_per_hour", 100)
+    monkeypatch.setattr(settings, "rate_limit_per_ip_per_hour", 0)
+    monkeypatch.setattr(settings, "rate_limit_window_seconds", 3600)
+    app = _chat_app(migrated_session)
+    fresh_session = await _insert_session(migrated_session)
+    await _insert_aged_ip_audit(migrated_session, "203.0.113.9", age_seconds=100)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/chat",
+            headers={"X-Forwarded-For": "203.0.113.9"},
+            json={"session_id": str(fresh_session), "message": "hello"},
+        )
+
+    assert response.status_code == 429
+    retry_after = int(response.headers["Retry-After"])
+    assert 0 < retry_after < settings.rate_limit_window_seconds
+
+
 def _chat_app(session: AsyncSession) -> FastAPI:
     app = FastAPI()
     app.add_exception_handler(AppError, app_error_handler)
@@ -138,6 +168,21 @@ async def _insert_audit(session: AsyncSession, session_id, ip: str) -> None:
             """
         ),
         {"session_id": session_id, "ip": ip},
+    )
+    await session.commit()
+
+
+async def _insert_aged_ip_audit(session: AsyncSession, ip: str, age_seconds: int) -> None:
+    """Seed an audit row for ``ip`` created ``age_seconds`` ago, inside the rate window."""
+    await session.execute(
+        text(
+            """
+            INSERT INTO query_audit_log (session_id, query, client_ip, latency_ms, created_at)
+            VALUES (NULL, 'seed', CAST(:ip AS inet), 1,
+                    now() - (:age_seconds * interval '1 second'))
+            """
+        ),
+        {"ip": ip, "age_seconds": age_seconds},
     )
     await session.commit()
 
