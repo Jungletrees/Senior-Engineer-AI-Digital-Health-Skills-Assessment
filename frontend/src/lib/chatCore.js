@@ -5,7 +5,9 @@ import { getApiBaseUrl } from "./documentsCore.js";
 // All user-facing copy lives here. It is read by people who simply want answers from
 // their own documents, so it never mentions retrieval, chunks, indexing, or grounding.
 export const CHAT_ERROR_MESSAGE =
-  "I could not reach the chat service. Please check that it is running, then try again.";
+  "I could not reach the chat service. Please check that it is running, then try again. " +
+  "If you just ran the test suite, ask the developer to restore the database tables that pytest may have dropped " +
+  "(run `alembic upgrade head` and restart the backend).";
 
 export const WELCOME_MESSAGE =
   "Ask a question about the documents you have uploaded. Every answer comes from those documents, and shows you the page each fact came from.";

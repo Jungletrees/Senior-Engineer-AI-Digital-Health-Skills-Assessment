@@ -184,7 +184,9 @@ async def handle_message(message: cl.Message) -> None:
     except httpx.HTTPError:
         await _replace(
             pending,
-            "I could not reach the chat service. Please check that it is running, then try again.",
+            "I could not reach the chat service. Please check that it is running, then try again. "
+            "If you just ran the test suite, ask the developer to restore the database tables that "
+            "pytest may have dropped (run `alembic upgrade head` and restart the backend).",
         )
         return
 

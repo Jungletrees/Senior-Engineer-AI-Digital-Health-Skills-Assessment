@@ -174,10 +174,8 @@ class ChainlitChatTests(unittest.IsolatedAsyncioTestCase):
         await chat.handle_message(_FakeMessage("what is the child dose?"))
 
         placeholder = _FakeMessage.sent[-1]
-        self.assertEqual(
-            placeholder.content,
-            "I could not reach the chat service. Please check that it is running, then try again.",
-        )
+        self.assertTrue(placeholder.content.startswith("I could not reach the chat service."))
+        self.assertIn("pytest may have dropped", placeholder.content)
 
     def test_thinking_placeholder_is_defined(self) -> None:
         chat = _load_chat_module()
