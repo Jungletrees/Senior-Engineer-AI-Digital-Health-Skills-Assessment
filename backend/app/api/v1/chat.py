@@ -37,7 +37,7 @@ from app.chat.response_presenter import (
     document_display_title,
     present_answer,
 )
-from app.retrieval.query_analysis import analyze_query
+from app.retrieval.query_analysis import QueryIntent, analyze_query, resolve_document_ids
 from app.chainlit_steps import chainlit_step
 from app.core.cost import compute_cost
 from app.agents.tracing import record_decision
@@ -223,6 +223,9 @@ async def chat(
     )
 
     conversation = await load_conversation_context(db, session_id, generation_client)
+    # For a comparison / all-documents question, resolve which documents must be covered so
+    # retrieval can run per-document quotas instead of letting one document dominate.
+    required_document_ids = await _resolve_required_documents(db, analysis)
     try:
         payload_for_generation = await assemble_generation_payload(
             query=payload.message,
@@ -232,6 +235,7 @@ async def chat(
             model=routed_model(),
             retrieval_agent=getattr(request.app.state, "retrieval_agent", None),
             query_audit_log_id=audit_id,
+            required_document_ids=required_document_ids,
             embedding_client=_embedding_client(request),
             reranker=getattr(request.app.state, "reranker", None),
             expansion_model_client=getattr(request.app.state, "expansion_model_client", None),
@@ -414,6 +418,23 @@ def _citation_model(candidate: CitationCandidate) -> Citation:
         snippet=candidate.snippet,
         reference=candidate.reference_line(),
     )
+
+
+async def _resolve_required_documents(db: AsyncSession, analysis: Any) -> list[UUID] | None:
+    """Map a multi-document query's aliases to concrete indexed-document ids, in upload order."""
+    if analysis is None or not analysis.is_multi_document:
+        return None
+    rows = (
+        await db.execute(
+            text("SELECT id, filename FROM documents WHERE status = 'indexed' ORDER BY uploaded_at ASC, id ASC")
+        )
+    ).mappings().all()
+    documents = [(row["id"], str(row["filename"])) for row in rows]
+    resolved = resolve_document_ids(analysis.document_aliases, documents)
+    # "across all documents" with no explicit alias means every indexed document.
+    if analysis.intent is QueryIntent.ALL_DOCUMENTS and not resolved:
+        resolved = [doc_id for doc_id, _ in documents]
+    return resolved or None
 
 
 def _generation_client(request: Request) -> GenerationClient:

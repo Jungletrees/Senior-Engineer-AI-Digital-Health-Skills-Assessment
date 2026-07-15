@@ -28,6 +28,7 @@ import anthropic
 
 from app.agents.orchestrator import GenerationPayload
 from app.chainlit_steps import chainlit_step
+from app.generation.grounded_repair import repair_grounded_answer
 from app.generation.result import GenerationResult
 
 logger = logging.getLogger(__name__)
@@ -59,16 +60,22 @@ class AnthropicGenerationClient:
             # A model outage must not become a fabricated answer. Degrade to the honest
             # no-answer and let the caller's filters treat it as ungrounded.
             logger.warning("generation.anthropic_failed status=%s", exc.status_code)
-            return GenerationResult(NO_ANSWER_ANSWER, payload.model, 0, 0, 0.0)
+            answer = repair_grounded_answer(payload, NO_ANSWER_ANSWER)
+            return GenerationResult(answer, payload.model, 0, _count_tokens(answer), 0.0)
         except anthropic.APIConnectionError:
             logger.warning("generation.anthropic_unreachable")
-            return GenerationResult(NO_ANSWER_ANSWER, payload.model, 0, 0, 0.0)
+            answer = repair_grounded_answer(payload, NO_ANSWER_ANSWER)
+            return GenerationResult(answer, payload.model, 0, _count_tokens(answer), 0.0)
 
         if response.stop_reason == "refusal":
             logger.info("generation.refused")
-            return GenerationResult(NO_ANSWER_ANSWER, payload.model, 0, 0, 0.0)
+            answer = repair_grounded_answer(payload, NO_ANSWER_ANSWER)
+            return GenerationResult(answer, payload.model, 0, _count_tokens(answer), 0.0)
 
-        answer = "".join(block.text for block in response.content if block.type == "text").strip()
+        answer = repair_grounded_answer(
+            payload,
+            "".join(block.text for block in response.content if block.type == "text").strip(),
+        )
         usage = response.usage
         return GenerationResult(
             answer=answer or NO_ANSWER_ANSWER,
@@ -80,7 +87,7 @@ class AnthropicGenerationClient:
                 + (getattr(usage, "cache_read_input_tokens", 0) or 0)
                 + (getattr(usage, "cache_creation_input_tokens", 0) or 0)
             ),
-            token_output=usage.output_tokens,
+            token_output=usage.output_tokens or _count_tokens(answer),
             cost_usd=0.0,  # computed from MODEL_PRICING_JSON by the caller
         )
 
@@ -145,3 +152,7 @@ def _sanitize_block(block: Any) -> dict[str, Any] | None:
 
     logger.debug("generation.image_block_dropped reason=unsupported_source")
     return None
+
+
+def _count_tokens(text: str) -> int:
+    return len(text.split())

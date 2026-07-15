@@ -9,6 +9,7 @@ import re
 from app.agents.orchestrator import GenerationPayload
 from app.chainlit_steps import chainlit_step
 from app.core.model_router import ModelOption, Task, resolve
+from app.generation.grounded_repair import repair_grounded_answer
 from app.generation.result import GenerationClient, GenerationResult
 from app.settings import settings
 
@@ -113,7 +114,7 @@ class DeterministicGenerationClient:
     @chainlit_step("generation", "llm")
     async def generate(self, payload: GenerationPayload, max_tokens: int) -> GenerationResult:
         context_text = _payload_text(payload)
-        answer = _compose_grounded_answer(payload)
+        answer = repair_grounded_answer(payload, _compose_grounded_answer(payload))
         return GenerationResult(
             answer=answer,
             model=payload.model,

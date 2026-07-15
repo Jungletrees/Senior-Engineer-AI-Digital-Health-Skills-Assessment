@@ -446,5 +446,16 @@
     "deployment_doc": "DEPLOYMENT.md gained a 'Hardening From Observed Test Behavior' section refining the plan across performance/latency, concurrency (event-loop-blocking ingestion), DB reliability (ephemeral storage, connection-during-sleep, test-DB isolation), reliability, observability (suppressed INFO logs), traceability, and cost-per-request.",
     "deterministic_verification": "Full backend hermetic pytest (provider keys cleared): 255 passed / 12 skipped with committed code; changed-suites with the new provider-failure + connection changes: 24 passed; unit suites 26 passed. Final full-suite re-run with the new changes in progress at handoff.",
     "deferred_followups_data_backed": "Phase 2 (chunk metadata/tags/content_kind + document inventory + sparse-visual OCR) and Phase 3 (per-document retrieval quotas, metadata-filtered pools, bounded recovery). The stress sample now shows Phase 3 is the highest-value next step for SYN/NUM/INF; the query analyzer (analyze_query + resolve_document_ids) already provides the intent + document-alias signals a quota-aware retriever needs."
+  },
+  {
+    "from_agent": "backend-ml-test-agents",
+    "to_agent": "orchestrator",
+    "cycle_id": "RAG_STRESS_CORRECTIVES_PHASE2_PHASE3",
+    "status": "phase2_and_phase3_core_implemented_and_verified",
+    "branch": "codex/rag-precision-evidence-reliability-correctives",
+    "phase2_ingestion_metadata": "Migrations 0017 (chunks.metadata JSONB + theme_tags/entity_tags/metric_tags + content_kind, GIN indexes) and 0018 (document_inventory table). Deterministic generators app/documents/chunk_metadata.py (content-kind classification incl. sparse_visual_page for OCR/low-yield pages; theme/entity/metric extraction) and app/documents/document_inventory.py (authors, orgs, section headings, table/figure/reference counts, dates, unit-bearing numeric_facts). Wired into chunking.py. Embeddings stay on raw content by design (reuse consistency + citation truthfulness; ARCHITECTURE §18). Unit + migration + ingestion-persistence tests green.",
+    "phase3_document_aware_retrieval": "app/agents/retrieval_agent.py _document_aware_cascade retrieves per required document with a quota and reranks the merged pool when the analyzer resolves >=2 documents; coverage traced to agent_trace_log. Threaded through chat.py (_resolve_required_documents) -> assemble_generation_payload -> RetrievalAgent.run -> run_retrieval_cascade. Deterministic test asserts both documents are covered and single-doc queries keep the flat cascade.",
+    "verification": "Full hermetic backend pytest (provider keys cleared): 266 passed at Phase 2; Phase 3 retrieval/orchestrator/chat suites 38 passed; final full-suite re-run at handoff. Live targeted stress re-run pending a re-index (deterministic fixtures wipe the DB).",
+    "remaining_followups": "See build-plans-architecture/RAG_STRESS_REMEDIATION_PHASE3_PLUS_HANDOFF.md: Phase 3 metadata-filtered pools + inventory routing (table/figure/document_inventory intents) + numeric candidate preference + bounded recovery; Phase 4 attribute_absent + missing_required_document gate reasons; inventory-answering path; gold-standard run; live targeted stress after re-index."
   }
 ]

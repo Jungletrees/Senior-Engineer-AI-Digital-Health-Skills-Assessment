@@ -50,6 +50,7 @@ class RetrievalAgent:
         session_id: UUID | None = None,
         query_audit_log_id: UUID | None = None,
         document_id_filter: list[UUID] | None = None,
+        required_document_ids: list[UUID] | None = None,
         embedding_client: EmbeddingClient | None = None,
         reranker: Reranker | None = None,
         hosted_rerank: HostedRerankFn | None = None,
@@ -62,6 +63,7 @@ class RetrievalAgent:
             session_id=session_id,
             query_audit_log_id=query_audit_log_id,
             document_id_filter=document_id_filter,
+            required_document_ids=required_document_ids,
             embedding_client=embedding_client,
             reranker=reranker,
             hosted_rerank=hosted_rerank,
@@ -79,6 +81,7 @@ async def run_retrieval_cascade(
     session_id: UUID | None = None,
     query_audit_log_id: UUID | None = None,
     document_id_filter: list[UUID] | None = None,
+    required_document_ids: list[UUID] | None = None,
     embedding_client: EmbeddingClient | None = None,
     reranker: Reranker | None = None,
     hosted_rerank: HostedRerankFn | None = None,
@@ -88,7 +91,27 @@ async def run_retrieval_cascade(
     expand_query_fn: ExpandQueryFn = expand_query,
     fetch_page_image_fn: FetchPageImageFn = fetch_page_image,
 ) -> RetrievalAgentResult:
-    """Run hybrid search, rerank, and bounded expansion when confidence is low."""
+    """Run hybrid search, rerank, and bounded expansion when confidence is low.
+
+    When the query analyzer resolved two or more required documents (a comparison or
+    all-documents question), retrieval runs per document with a quota so a single dominant
+    document cannot consume the whole context, then reranks the merged, diverse pool.
+    """
+    if required_document_ids is not None and len({*required_document_ids}) >= 2:
+        return await _document_aware_cascade(
+            db=db,
+            query=query,
+            required_document_ids=list(dict.fromkeys(required_document_ids)),
+            embedding_client=embedding_client,
+            reranker=reranker,
+            hosted_rerank=hosted_rerank,
+            hybrid_search_fn=hybrid_search_fn,
+            rerank_fn=rerank_fn,
+            fetch_page_image_fn=fetch_page_image_fn,
+            session_id=session_id,
+            query_audit_log_id=query_audit_log_id,
+        )
+
     max_iterations = settings.retrieval_agent_max_iterations
     threshold = settings.retrieval_agent_confidence_threshold
     deterministic = await _hybrid_then_rerank(
@@ -209,6 +232,97 @@ async def run_retrieval_cascade(
         )
 
 
+async def _document_aware_cascade(
+    db: AsyncSession,
+    query: str,
+    required_document_ids: list[UUID],
+    embedding_client: EmbeddingClient | None,
+    reranker: Reranker | None,
+    hosted_rerank: HostedRerankFn | None,
+    hybrid_search_fn: HybridSearchFn,
+    rerank_fn: RerankFn,
+    fetch_page_image_fn: FetchPageImageFn,
+    session_id: UUID | None,
+    query_audit_log_id: UUID | None,
+) -> RetrievalAgentResult:
+    """Retrieve per required document with a quota, merge, and rerank the diverse pool."""
+    per_doc_quota = max(2, settings.retrieval_top_k // len(required_document_ids))
+    per_doc_results: list[HybridSearchResult] = []
+    for document_id in required_document_ids:
+        per_doc_results.append(
+            await hybrid_search_fn(
+                db=db,
+                query=query,
+                top_k=per_doc_quota,
+                document_id_filter=[document_id],
+                embedding_client=embedding_client,
+                trace_db=db,
+                trace_session_id=session_id,
+                trace_query_audit_log_id=query_audit_log_id,
+                trace_input={"query": query, "document_scope": str(document_id)},
+            )
+        )
+
+    merged = merge_candidates_preserving_best_score(per_doc_results)
+    reranked = await rerank_fn(
+        query=query,
+        candidates=merged,
+        # Keep enough final context to represent every required document.
+        top_n=max(settings.rerank_top_n, len(required_document_ids) * 2),
+        reranker=reranker,
+        hosted_rerank=hosted_rerank,
+        trace_db=db,
+        trace_session_id=session_id,
+        trace_query_audit_log_id=query_audit_log_id,
+        trace_input={"query": query, "candidate_count": len(merged)},
+    )
+    reranked = preserve_required_document_coverage(
+        reranked=reranked,
+        candidates=merged,
+        required_document_ids=required_document_ids,
+    )
+
+    covered = sorted({str(candidate.document_id) for candidate in reranked.candidates})
+    if db is not None:
+        from app.agents.tracing import record_decision
+
+        await record_decision(
+            db,
+            agent_id="retrieval_agent",
+            decision="document_aware_retrieval",
+            detail={
+                "required_documents": [str(document_id) for document_id in required_document_ids],
+                "covered_documents": covered,
+                "per_document_quota": per_doc_quota,
+                "missing_documents": [
+                    str(document_id)
+                    for document_id in required_document_ids
+                    if str(document_id) not in covered
+                ],
+            },
+            session_id=session_id,
+            query_audit_log_id=query_audit_log_id,
+        )
+
+    hybrid_result = HybridSearchResult(
+        candidates=merged,
+        top_score=max((candidate.fused_score or 0.0) for candidate in merged) if merged else 0.0,
+        rrf_k=settings.rrf_k,
+        hybrid_enabled=True,
+    )
+    return await _build_result(
+        db=db,
+        hybrid_result=hybrid_result,
+        reranked=reranked,
+        expanded=False,
+        iterations=1,
+        fallback_used=False,
+        fetch_page_image_fn=fetch_page_image_fn,
+        session_id=session_id,
+        query_audit_log_id=query_audit_log_id,
+    )
+
+
 def merge_candidates_preserving_best_score(
     results: list[HybridSearchResult],
 ) -> list[RetrievalCandidate]:
@@ -231,6 +345,47 @@ def merge_candidates_preserving_best_score(
         candidates_by_id.values(),
         key=lambda item: (-(item.fused_score or 0.0), str(item.chunk_id)),
     )
+
+
+def preserve_required_document_coverage(
+    *,
+    reranked: RerankResult,
+    candidates: list[RetrievalCandidate],
+    required_document_ids: list[UUID],
+) -> RerankResult:
+    """Ensure explicit multi-document questions keep evidence from each required doc.
+
+    The cross-encoder owns relevance ordering, but for comparison/synthesis questions a
+    lower-scored minority document is still required context. Without this final pass, a
+    chunk-heavy document can monopolize the top-N after reranking and generation sees an
+    incomplete evidence set.
+    """
+    required = list(dict.fromkeys(required_document_ids))
+    selected = list(reranked.candidates)
+    selected_chunk_ids = {candidate.chunk_id for candidate in selected}
+    covered = {candidate.document_id for candidate in selected}
+
+    for document_id in required:
+        if document_id in covered:
+            continue
+        replacement = next(
+            (
+                candidate
+                for candidate in candidates
+                if candidate.document_id == document_id
+                and candidate.chunk_id not in selected_chunk_ids
+            ),
+            None,
+        )
+        if replacement is None:
+            continue
+        selected.append(replacement)
+        selected_chunk_ids.add(replacement.chunk_id)
+        covered.add(document_id)
+
+    if len(selected) == len(reranked.candidates):
+        return reranked
+    return reranked.model_copy(update={"candidates": selected})
 
 
 async def _hybrid_then_rerank(

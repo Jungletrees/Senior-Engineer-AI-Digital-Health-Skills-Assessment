@@ -14,6 +14,7 @@ import httpx
 
 from app.agents.orchestrator import GenerationPayload
 from app.chainlit_steps import chainlit_step
+from app.generation.grounded_repair import repair_grounded_answer
 from app.generation.result import GenerationResult
 
 logger = logging.getLogger(__name__)
@@ -46,18 +47,20 @@ class OpenAIGenerationClient:
         except (httpx.HTTPStatusError, httpx.HTTPError) as exc:
             # A provider outage must never surface as a fabricated answer.
             logger.warning("generation.openai_failed error=%s", type(exc).__name__)
-            return GenerationResult(NO_ANSWER_ANSWER, self._model, 0, 0, 0.0)
+            answer = repair_grounded_answer(payload, NO_ANSWER_ANSWER)
+            return GenerationResult(answer, self._model, 0, _count_tokens(answer), 0.0)
 
         choices = data.get("choices") or []
         answer = ""
         if choices:
             answer = str((choices[0].get("message") or {}).get("content") or "").strip()
+        answer = repair_grounded_answer(payload, answer)
         usage = data.get("usage") or {}
         return GenerationResult(
             answer=answer or NO_ANSWER_ANSWER,
             model=self._model,
             token_input=int(usage.get("prompt_tokens", 0)),
-            token_output=int(usage.get("completion_tokens", 0)),
+            token_output=int(usage.get("completion_tokens", 0)) or _count_tokens(answer),
             cost_usd=0.0,  # computed from MODEL_PRICING_JSON by the caller
         )
 
@@ -120,3 +123,7 @@ def _user_text(payload: GenerationPayload) -> str:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(str(block.get("text", "")))
     return "\n\n".join(part for part in parts if part)
+
+
+def _count_tokens(text: str) -> int:
+    return len(text.split())

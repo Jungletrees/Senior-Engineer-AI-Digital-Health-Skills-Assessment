@@ -47,6 +47,7 @@ Recommended components:
 |---|---|---|
 | Frontend | S3 + CloudFront for a static build, or ECS Fargate/App Runner for current Next.js server runtime | CloudFront gives edge caching when static; Fargate/App Runner avoids changing runtime assumptions. |
 | Backend API | ECS Fargate for the current container | Warm container is better for local reranker loading, PDF parsing/OCR, and async DB pooling. |
+| Ingestion workers | Separate ECS/Fargate service or event-driven worker tasks | Full-document parsing, OCR, chunking, and embedding are long-running, token-intensive workloads that must scale independently of `/chat` and `/health`. |
 | Chainlit | ECS Fargate behind ALB, pointed at the private FastAPI service URL | Keeps chat isolated while sharing backend logic through `/api/v1/chat`. |
 | Database | Amazon RDS PostgreSQL 16 with pgvector | Managed backups, Multi-AZ, encryption, and PostgreSQL extension support. |
 | Object storage | Amazon S3 private buckets | Durable storage for uploaded PDFs and rasterized page images. |
@@ -86,11 +87,13 @@ Routing policy:
 
 - fast/low-cost model: summaries, classification, grading prechecks, query expansion, and low-risk transformations
 - stronger model: final grounded answer generation and complex clinical reasoning
+- embedding model/provider: choose by sustained throughput, quota limits, vector dimension, recall quality, and re-index cost, not only unit price
 - pinned judge model: `JudgeAgent` uses a fixed model, temperature, and rubric version so trends are reproducible
 
 Cost controls:
 
 - Track per-model input/output token usage and cost through `MODEL_PRICING_JSON` or a Bedrock-aware equivalent.
+- Track embedding inputs separately from chat turns. A 16-page technical PDF in the local stress corpus produced **583 chunks**, so a single upload can consume hundreds of embedding inputs before any user asks a question; larger guidelines can consume thousands.
 - Configure AWS Budgets and CloudWatch anomaly alerts for model cost spikes.
 - Keep exact cache, semantic cache, and prompt caching enabled only where safe.
 - Run refusal/grounding gates before caching generated answers.
@@ -103,6 +106,7 @@ Cost controls:
 - Keep scheduler jobs behind PostgreSQL advisory-lock singleton guards so horizontal replicas do not duplicate work.
 - Make ingestion and gold-eval jobs idempotent around document content hashes, run IDs, and audit lineage.
 - Move large PDF processing to queue/event-backed workers at scale: S3 upload event -> SQS/EventBridge -> worker/Lambda/ECS task.
+- Treat embedding as a batch pipeline with backpressure: cap concurrent document ingestions per provider key, retry `429` with jittered backoff, surface stale `processing` documents, and scale workers from queue depth plus provider quota.
 - Set autoscaling boundaries separately for frontend, backend, Chainlit, and worker tasks.
 - Run RDS Multi-AZ with automated backups and periodic restore tests.
 - Use S3 versioning/lifecycle rules and KMS encryption for PDFs and page images.
@@ -118,13 +122,20 @@ hypothetical, and refine the plan across scalability, reliability, performance,
 observability, traceability, and cost-per-request.
 
 **Performance / latency (measured).** With the free-tier Gemini embedding key, a
-16-page / 582-chunk PDF took **~566 s (~9.4 min)** to reach `indexed`, while 1-page docs
+16-page / 583-chunk PDF took **~566 s (~9.4 min)** to reach `indexed`, while 1-page docs
 finished in seconds — the time is client-side pacing and free-tier `429`/backoff, not CPU
 (ARCHITECTURE §7.7). *Refinement:* production must not embed on a free tier — set
 `EMBEDDING_REQUESTS_PER_MINUTE=0`, raise `EMBEDDING_BATCH_LIMIT` toward 100, or use
 `text-embedding-3-small` (1536-dim, no re-index). Async ingestion already keeps the upload
 response fast; embedding reuse keyed on `chunks.content_hash` avoids re-paying for identical
 text. A dimension change is a re-index, not a config flip.
+
+**Capacity planning implication.** Document indexing must be planned as a token-heavy
+offline workload. Capacity targets should include pages/minute, chunks/minute,
+embedding-input tokens/minute, queue age, retry rate, and cost/document. The web API can run
+many short chat/status requests, but embedding workers need longer task timeouts, durable
+leases, idempotent resume/retry behavior, and per-provider concurrency controls so high
+upload traffic does not starve chat traffic or exhaust daily embedding quota.
 
 **Concurrency (observed).** Ingestion runs as an in-process FastAPI background task that
 performs synchronous PDF parse / rasterize / OCR / embed work on the async event loop, so a

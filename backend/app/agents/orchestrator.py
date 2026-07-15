@@ -8,6 +8,7 @@ from uuid import UUID
 
 from app.agents.retrieval_agent import RetrievalAgent
 from app.retrieval.compaction import compact_chunk
+from app.retrieval.evidence_completion import complete_evidence_chunks
 from app.retrieval.models import PageImageResult, RetrievalAgentResult, RetrievalCandidate
 from app.security.guardrails import sanitize_tool_result
 from app.settings import settings
@@ -106,6 +107,7 @@ async def assemble_generation_payload(
     # Block ids are the citation contract with the model, so the blocks must be
     # deduplicated here: `source_chunks[n - 1]` has to be the block cited as `[cite:n]`.
     chunks = _unique_chunks(retrieval.chunks)
+    chunks = await complete_evidence_chunks(db=db, query=query, chunks=chunks)
     content: list[dict[str, Any]] = []
     images_by_chunk = {image.chunk_id: image for image in retrieval.page_images}
     for block_id, chunk in enumerate(chunks, start=1):

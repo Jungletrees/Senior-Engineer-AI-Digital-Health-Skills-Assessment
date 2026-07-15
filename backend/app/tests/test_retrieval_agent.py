@@ -132,6 +132,71 @@ async def test_iteration_bound_falls_back_to_deterministic(monkeypatch: pytest.M
     assert result.fallback_used is True
 
 
+@pytest.mark.asyncio
+async def test_document_aware_retrieval_covers_each_required_document() -> None:
+    """A two-document comparison must retrieve per document so one cannot dominate."""
+    doc_a = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    doc_b = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    cand_a = _candidate("00000000-0000-0000-0000-0000000000a1", 0.02).model_copy(update={"document_id": doc_a})
+    cand_b = _candidate("00000000-0000-0000-0000-0000000000b1", 0.02).model_copy(update={"document_id": doc_b})
+
+    async def fake_hybrid(**kwargs: object) -> HybridSearchResult:
+        scope = kwargs.get("document_id_filter") or []
+        candidate = cand_b if doc_b in scope else cand_a
+        return HybridSearchResult(candidates=[candidate], top_score=0.02, rrf_k=60, hybrid_enabled=True)
+
+    result = await run_retrieval_cascade(
+        db=None,
+        query="compare document 1 and document 3",
+        required_document_ids=[doc_a, doc_b],
+        hybrid_search_fn=fake_hybrid,
+        rerank_fn=_rerank_fn([0.9, 0.8]),
+        expand_query_fn=_expand_fn(["unused"]),
+        fetch_page_image_fn=_no_image,
+    )
+
+    covered = {chunk.document_id for chunk in result.chunks}
+    assert doc_a in covered and doc_b in covered
+    # A single required document falls through to the ordinary flat cascade.
+    single = await run_retrieval_cascade(
+        db=None,
+        query="single",
+        required_document_ids=[doc_a],
+        hybrid_search_fn=fake_hybrid,
+        rerank_fn=_rerank_fn([0.9]),
+        expand_query_fn=_expand_fn(["unused"]),
+        fetch_page_image_fn=_no_image,
+    )
+    assert {chunk.document_id for chunk in single.chunks} == {doc_a}
+
+
+@pytest.mark.asyncio
+async def test_document_aware_retrieval_preserves_coverage_after_rerank() -> None:
+    """Reranking must not drop every candidate from an explicitly required document."""
+    doc_a = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+    doc_b = UUID("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+    cand_a = _candidate("00000000-0000-0000-0000-0000000000a1", 0.03).model_copy(update={"document_id": doc_a})
+    cand_b = _candidate("00000000-0000-0000-0000-0000000000b1", 0.01).model_copy(update={"document_id": doc_b})
+
+    async def fake_hybrid(**kwargs: object) -> HybridSearchResult:
+        scope = kwargs.get("document_id_filter") or []
+        candidate = cand_b if doc_b in scope else cand_a
+        return HybridSearchResult(candidates=[candidate], top_score=0.03, rrf_k=60, hybrid_enabled=True)
+
+    result = await run_retrieval_cascade(
+        db=None,
+        query="compare chevron and layoutparser",
+        required_document_ids=[doc_a, doc_b],
+        hybrid_search_fn=fake_hybrid,
+        # Simulate a reranker top-N that kept only the dominant document.
+        rerank_fn=_rerank_fn([0.95]),
+        expand_query_fn=_expand_fn(["unused"]),
+        fetch_page_image_fn=_no_image,
+    )
+
+    assert [chunk.document_id for chunk in result.chunks] == [doc_a, doc_b]
+
+
 def test_no_public_page_image_route_exists() -> None:
     paths = {route.path for route in app.routes}
 

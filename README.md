@@ -294,12 +294,14 @@ Each agent in the pipeline chooses its provider from the cheapest **configured**
 
 #### Provider rate limits and the free-tier embedding cap (read before ingesting a large PDF)
 
-Hosted providers rate-limit requests, and ingestion is embedding-heavy: a multi-hundred-page PDF produces hundreds of chunks, each an embedding request. The backend handles this in two layers, both env-tunable:
+Hosted providers rate-limit requests, and ingestion is embedding-heavy: a full-document upload is not "one model call." A 16-page technical PDF in the local stress corpus expands to **583 chunks** before indexing, so one ordinary-looking document can consume hundreds of embedding inputs, token budget, and provider quota before the first chunk is committed. Larger clinical guidelines scale this into thousands of embedding inputs. The backend handles this in two layers, both env-tunable:
 
 - **Retry with backoff.** A transient `429`/`5xx` from Gemini is retried with exponential backoff up to ~2 minutes (`_gemini_post_with_retry`), honoring any `Retry-After`. A real `4xx` (e.g. a malformed request) is never retried. Covered by `test_gemini_retry.py`.
 - **Batch + pacing.** `batchEmbedContents` counts each item in the batch as one request against the per-minute quota, so a batch at the API ceiling (100) exhausts a whole minute in one call. The batch is capped (`EMBEDDING_BATCH_LIMIT=40`) and batches are paced to stay under `EMBEDDING_REQUESTS_PER_MINUTE=70`. Raise both — or set the RPM to `0` to disable pacing — on a paid tier.
 
 **The hard limit is the free-tier _daily_ embedding quota, not the per-minute one.** Gemini's free tier for `gemini-embedding-001` enforces `EmbedContentRequestsPerDayPerUserPerProjectPerModel`, a low per-day cap that is **per Google Cloud project** (rotating to another key on the same project does not reset it). When it is exhausted, every embedding request returns `429` regardless of backoff, and the document ends in `failed` — this is an account quota, not a code fault. To ingest the full corpus on a free tier, use a key from a **fresh project** (fresh daily quota), enable billing to lift the cap, or wait for the daily reset. Generation and embedding quotas are separate buckets, so chat can keep working even when embedding is capped. If you only need to see the pipeline run end-to-end without a key, unset the embedding key and the system indexes with the offline hash-based embedder and shows the "limited search" notice.
+
+**Production planning implication:** do not size production around free-tier embedding behavior or in-process upload workers. Treat embedding as a separate high-throughput batch workload with its own quota, autoscaling, queue depth, retry budget, and cost alarms. Use a paid provider tier, Bedrock/managed provider quotas where available, or a dedicated embedding provider with predictable throughput. Keep the embedding dimension stable (`1536` here) unless a planned re-index is scheduled, because stored pgvector rows and semantic-cache rows are model/dimension scoped.
 
 ### API keys — security posture
 
@@ -327,6 +329,7 @@ Provider keys are the highest-value secret here — they are spendable. Full pos
 
 - FastAPI request handling and database access use async SQLAlchemy sessions with a configured connection pool.
 - Upload requests persist a document record and enqueue background ingestion; a durable queue is the production next step for high-volume PDF processing.
+- Full-document embedding is token- and quota-intensive. Production needs dedicated ingestion workers, queue backpressure, concurrency caps per provider, and alarms on document age in `processing`, provider `429`s, embedding cost, and worker saturation.
 - The backend is stateless across replicas; session, cache, audit, grading, and trace data live in PostgreSQL.
 - Scheduled jobs are protected by PostgreSQL advisory locks so horizontal replicas do not duplicate cache hygiene, grading, anomaly, or gold-eval jobs.
 - Exact and semantic caches reduce repeated retrieval/generation work. Semantic cache rows are scoped by embedding model to avoid cross-model vector comparisons.
@@ -350,6 +353,7 @@ The target production architecture is AWS with private networking and managed da
 
 - **Frontend:** S3 + CloudFront for a static export if the app is made static, or ECS Fargate/App Runner for the current Next.js server runtime.
 - **Backend API:** ECS Fargate is the best fit for the current FastAPI container because local reranking, PDF parsing, OCR, and connection pooling benefit from warm containers.
+- **Ingestion workers:** separate ECS/Fargate worker service or event-driven tasks for PDF parse/OCR/chunk/embed/index work. Do not rely on the web task's FastAPI background task under high traffic; queue uploads through S3/SQS/EventBridge and scale workers independently.
 - **Chainlit:** ECS Fargate behind the same ALB once it is wired to `/api/v1/chat`; otherwise omit it from production.
 - **Database:** Amazon RDS PostgreSQL 16 with pgvector enabled, Multi-AZ, encrypted storage, automated backups, and restore testing.
 - **Object storage:** S3 private buckets for uploaded PDFs and rasterized page images, encrypted with KMS.
@@ -369,7 +373,7 @@ Compute trade-offs:
 | EKS | Large multi-service platform | Operational overhead is not justified here |
 | EC2 | Full host control | Manual patching/scaling burden |
 
-Amazon Bedrock should be the production model-governance layer where available. Route cheap tasks such as summarization, classification, grading prechecks, and query expansion to fast/low-cost models; reserve stronger models for final grounded answer generation and complex clinical reasoning. Keep `JudgeAgent` reproducible with pinned model, temperature, and rubric version. Track per-model token usage and cost through `MODEL_PRICING_JSON` or a Bedrock-aware equivalent, add budget alerts/anomaly detection, use exact/semantic/prompt caching only after grounding/refusal gates, and preserve exact numeric grounding regardless of model choice.
+Amazon Bedrock should be the production model-governance layer where available. Route cheap tasks such as summarization, classification, grading prechecks, and query expansion to fast/low-cost models; reserve stronger models for final grounded answer generation and complex clinical reasoning. Embeddings are a separate capacity lane: select an embedding model/provider by throughput, quota limits, vector dimension, recall quality, and re-index cost, not only unit price. Keep `JudgeAgent` reproducible with pinned model, temperature, and rubric version. Track per-model token usage and cost through `MODEL_PRICING_JSON` or a Bedrock-aware equivalent, add budget alerts/anomaly detection, use exact/semantic/prompt caching only after grounding/refusal gates, and preserve exact numeric grounding regardless of model choice.
 
 ## CI/CD Plan
 

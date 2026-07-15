@@ -21,6 +21,7 @@ import httpx
 
 from app.agents.orchestrator import GenerationPayload
 from app.chainlit_steps import chainlit_step
+from app.generation.grounded_repair import repair_grounded_answer
 from app.generation.result import GenerationResult
 
 logger = logging.getLogger(__name__)
@@ -56,15 +57,16 @@ class GeminiGenerationClient:
         except (httpx.HTTPStatusError, httpx.HTTPError) as exc:
             # A provider outage must never surface as a fabricated answer.
             logger.warning("generation.gemini_failed error=%s", type(exc).__name__)
-            return GenerationResult(NO_ANSWER_ANSWER, payload.model, 0, 0, 0.0)
+            answer = repair_grounded_answer(payload, NO_ANSWER_ANSWER)
+            return GenerationResult(answer, payload.model, 0, _count_tokens(answer), 0.0)
 
-        answer = _first_text(data)
+        answer = repair_grounded_answer(payload, _first_text(data))
         usage = data.get("usageMetadata") or {}
         return GenerationResult(
             answer=answer or NO_ANSWER_ANSWER,
             model=payload.model,
             token_input=int(usage.get("promptTokenCount", 0)),
-            token_output=int(usage.get("candidatesTokenCount", 0)),
+            token_output=int(usage.get("candidatesTokenCount", 0)) or _count_tokens(answer),
             cost_usd=0.0,  # computed from MODEL_PRICING_JSON by the caller
         )
 
@@ -171,3 +173,7 @@ def _first_text(data: dict[str, Any]) -> str:
         if candidate.get("finishReason") in {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST"}:
             logger.info("generation.gemini_blocked reason=%s", candidate.get("finishReason"))
     return ""
+
+
+def _count_tokens(text: str) -> int:
+    return len(text.split())
