@@ -406,5 +406,21 @@
     "test_results_summary": "Unit suites: 26 passed. Rate-limit + chat suites (hermetic): 23 passed. Full backend suite (hermetic, provider keys cleared): 255 passed, 12 skipped, 4 warnings in ~109s.",
     "divergences_logged": "ARCHITECTURE (4).md section 18 now records the four corrective decisions. No intentional divergence from the requested architecture; Phase-2 ingestion metadata and Phase-3 per-document retrieval quotas are deferred as documented follow-ups because they require a corpus reindex/OCR that the deterministic suite cannot verify in this pass.",
     "verification_requirements": "Deterministic verification complete. Remaining: rebuild the backend image so the live stack reflects these changes, then run the targeted stress sample with a real embedding/generation key and the 3 stress PDFs re-uploaded/indexed (deterministic fixtures wipe the shared DB). Note the deterministic suite is only hermetic when provider keys are cleared, because the semantic-cache lookup in test_rate_limit.py's app does not override the embedding client."
+  },
+  {
+    "from_agent": "rag-stress-validation-engineer",
+    "to_agent": "orchestrator",
+    "cycle_id": "RAG_STRESS_CORRECTIVES",
+    "status": "targeted_stress_partially_validated_live",
+    "branch": "codex/rag-precision-evidence-reliability-correctives",
+    "live_image_rebuilt": "docker compose -p assessment up -d --build backend, rebuilt with a real GEMINI_API_KEY (ephemeral env only, never committed).",
+    "targeted_ids_validated_live": {
+      "OOS-08 (LayoutParser current PyPI download count)": "PASS. Fast schema-stable no-answer in ~1.4s; cache_status=no_answer; 0 citations; output_filter_reason=external_current_fact; trace signals ['alias:layoutparser','entity:LayoutParser','external:pypi'] — refused correctly despite referencing a corpus entity.",
+      "OOS-25 (boiling point of water, 'according to the three documents')": "PASS. Fast external-fact no-answer; reason=external_current_fact; signals ['external:boiling point']; 0 citations.",
+      "OOS-21 (university of the '1st woman offshore platform engineer')": "As designed: NOT fast-refused by the gate (no external marker; conservative). Fell through to the corpus path. Once the corpus indexes, this is handled by generation-time attribute-absent refusal.",
+      "SYN-01, SYN-03, SYN-05, SYN-06, NUM-01, NUM-04, NUM-20, INF-09, INF-25": "BLOCKED (environment, not code). The 3 stress PDFs uploaded but live ingestion produced 0 chunks after 10+ min with no chunking/embedding log lines — the FastAPI background-task ingestion did not execute to completion under this single-container gunicorn + Gemini free-tier setup (a transient worker RemoteDisconnected dropped the initial upload burst). This is the ingestion pipeline, which this corrective slice deliberately does not modify (deferred Phase 2)."
+    },
+    "signals": "No 429 or 500 on the OOS evidence-gate path; refusals were fast (~1.4s), uncited, schema-stable, and reason-traced — directly addressing the report's biggest failing category (OOS 0/25) and the in_flight/slow-no-answer artifacts. Full-corpus SYN/NUM/INF recall could not be measured live because ingestion did not complete; the query analyzer's document-aware groundwork (resolve_document_ids) and the numeric-evidence gate are covered by deterministic tests.",
+    "full_stress_rerun": "Intentionally skipped per RAG-stress-validation-engineer skill; not warranted until ingestion completes and targeted SYN/NUM/INF samples can be measured."
   }
 ]
